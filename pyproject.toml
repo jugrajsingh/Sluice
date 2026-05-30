@@ -1,0 +1,23 @@
+[project]
+name = "sluice"
+version = "0.0.0"
+requires-python = ">=3.13"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# importlib mode lets a single `pytest packages` run collect all workspace
+# packages whose tests dirs share the `tests` package name without colliding.
+addopts = "-q --import-mode=importlib"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true

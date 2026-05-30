@@ -1,0 +1,11 @@
+.env
+# brainstorming / planning scratch — finalized decisions live in docs/adr + docs/
+docs/superpowers/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+.idea/
