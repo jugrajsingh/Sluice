@@ -1,0 +1,179 @@
+"""Terraform-backed ComputeProvider: one terraform state (and workdir) per VM."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+import uuid
+from pathlib import Path
+
+from sluice_core.errors import ProvisionFailure
+from sluice_core.models import AppSpec, ProvisionError, VmRecord, VmState
+
+_STOCKOUT = (
+    "ZONE_RESOURCE_POOL_EXHAUSTED",
+    "InsufficientInstanceCapacity",
+    "resource pool exhausted",
+    "does not have enough resources",
+)
+_QUOTA = ("Quota", "QUOTA", "quota")
+_AUTH = ("403", "401", "AccessDenied", "credentials", "Unauthorized")
+
+
+def classify_error(stderr: str) -> ProvisionError:
+    if any(p in stderr for p in _STOCKOUT):
+        return ProvisionError.STOCKOUT
+    if any(p in stderr for p in _QUOTA):
+        return ProvisionError.QUOTA
+    if any(p in stderr for p in _AUTH):
+        return ProvisionError.AUTH
+    return ProvisionError.OTHER
+
+
+def _hcl(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, dict):
+        inner = ", ".join(f"{json.dumps(k)} = {_hcl(v)}" for k, v in value.items())
+        return "{ " + inner + " }"
+    return json.dumps(value)
+
+
+class TerraformProvider:
+    def __init__(
+        self,
+        *,
+        binary: str = "terraform",
+        module_dir: str,
+        work_root: str,
+        state_backend: dict[str, str],
+        provider_defaults: dict[str, str],
+        worker_env: dict[str, str],
+        prober=None,
+    ) -> None:
+        self._tf = binary
+        self._modules = Path(module_dir).resolve()
+        self._root = Path(work_root)
+        self._backend = state_backend
+        self._defaults = provider_defaults
+        self._worker_env = worker_env
+        self._prober = prober
+
+    async def _run(self, workdir: Path, *args: str) -> tuple[int, str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            self._tf, f"-chdir={workdir}", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        out, err = await proc.communicate()
+        return proc.returncode or 0, out.decode(), err.decode()
+
+    def _backend_tf(self, key: str) -> str:
+        b = self._backend
+        if b.get("type") == "s3":
+            return (
+                f'terraform {{\n  backend "s3" {{\n    bucket = {json.dumps(b["bucket"])}\n'
+                f"    key = {json.dumps(key)}\n    region = {json.dumps(b.get('region', 'us-east-1'))}\n"
+                f"  }}\n}}\n"
+            )
+        if b.get("type") == "gcs":
+            return (
+                f'terraform {{\n  backend "gcs" {{\n    bucket = {json.dumps(b["bucket"])}\n'
+                f"    prefix = {json.dumps(key)}\n  }}\n}}\n"
+            )
+        return ""  # local state (dev)
+
+    def _module_values(self, app: AppSpec, *, name: str, region: str, pricing: str) -> dict[str, object]:
+        vm = app.placement.vm
+        env = {
+            **self._worker_env,
+            "WORKER__HANDLER": app.handler,
+            "WORKER__SOURCE": app.queue_ref,
+            "WORKER__APP": app.name,
+            **app.env,
+        }
+        common: dict[str, object] = {
+            "name": name,
+            "app": app.name,
+            "spot": pricing == "spot",
+            "worker_image": app.image,
+            "workers_per_vm": vm.workers_per_vm,
+            "linger_seconds": vm.linger_seconds,
+            "env": env,
+        }
+        if vm.provider == "gce":
+            common |= {
+                "zone": region + self._defaults.get("zone_suffix", "-a"),
+                "machine_type": vm.machine_type,
+                "accelerator_type": vm.accelerator_type,
+                "project": self._defaults.get("project", ""),
+            }
+            if vm.boot_image:
+                common["boot_image"] = vm.boot_image
+        else:  # ec2
+            common |= {
+                "instance_type": vm.machine_type,
+                "ami": vm.boot_image,
+                "iam_instance_profile": self._defaults.get("iam_instance_profile", ""),
+            }
+        return common
+
+    def _render(self, app: AppSpec, *, name: str, region: str, pricing: str) -> Path:
+        vm = app.placement.vm
+        workdir = self._root / app.name / region / name
+        workdir.mkdir(parents=True, exist_ok=True)
+        values = self._module_values(app, name=name, region=region, pricing=pricing)
+        lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{vm.provider}'))}"]
+        lines += [f"  {k} = {_hcl(v)}" for k, v in values.items()]
+        lines += ["}", 'output "instance_name" { value = module.vm.instance_name }']
+        (workdir / "main.tf").write_text("\n".join(lines) + "\n")
+        (workdir / "backend.tf").write_text(self._backend_tf(f"sluice/apps/{app.name}/tf/{region}/{name}"))
+        return workdir
+
+    async def provision(self, app: AppSpec, *, region: str, pricing: str, count: int) -> list[VmRecord]:
+        vm = app.placement.vm
+        records: list[VmRecord] = []
+        for _ in range(count):
+            name = f"sluice-{app.name}-{uuid.uuid4().hex[:6]}"
+            workdir = self._render(app, name=name, region=region, pricing=pricing)
+            for args in (
+                ("init", "-input=false"),
+                ("plan", "-out=plan.tfplan", "-input=false"),
+                ("apply", "plan.tfplan"),
+            ):
+                rc, _out, err = await self._run(workdir, *args)
+                if rc != 0:
+                    await self._run(workdir, "destroy", "-auto-approve", "-input=false")
+                    raise ProvisionFailure(classify_error(err), err.strip()[-500:])
+            rc, out, _err = await self._run(workdir, "output", "-json")
+            instance = name
+            if rc == 0 and out.strip():
+                instance = json.loads(out).get("instance_name", {}).get("value", name)
+            if instance != name:
+                workdir.rename(workdir.with_name(instance))
+            records.append(
+                VmRecord(
+                    id=instance,
+                    app=app.name,
+                    provider=vm.provider,
+                    region=region,
+                    pricing=pricing,
+                    machine_type=vm.machine_type,
+                    state=VmState.provisioning,
+                    created_at=time.time(),
+                )
+            )
+        return records
+
+    async def instance_states(self, app: str) -> list[VmRecord]:
+        if self._prober is None:
+            return []
+        return await self._prober.instance_states(app)
+
+    async def destroy(self, app: str, vm_ids: list[str]) -> None:
+        if not (self._root / app).exists():
+            return
+        for main_tf in (self._root / app).rglob("main.tf"):
+            if main_tf.parent.name in vm_ids:
+                await self._run(main_tf.parent, "destroy", "-auto-approve", "-input=false")
