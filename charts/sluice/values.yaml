@@ -1,0 +1,23 @@
+image:
+  registry: ghcr.io/jugrajsingh
+  tag: "0.1.0"
+queue:
+  backend: redis            # redis | sqs | memory
+  options: {}               # backend-specific, passed as QUEUE__OPTIONS JSON (e.g. url for redis)
+object_store:
+  backend: s3               # s3 | gcs | minio | local
+  options: {}               # passed as OBJECT_STORE__OPTIONS JSON (e.g. bucket, endpoint_url)
+backendSecret: ""           # optional Secret with backend credentials (AWS_*, ...) for all components
+redis:
+  enabled: true             # bundled dev Redis; disable to use managed (see Chart.yaml)
+gateway: { replicas: 2, tSyncSeconds: 3 }
+console: { replicas: 1 }
+autoscaler:
+  replicas: 1
+  leaderElection: true      # >1 safe once leader election is on
+  cloud:
+    gcpCredentialsSecret: ""    # secret with key credentials.json -> GOOGLE_APPLICATION_CREDENTIALS
+    awsCredentialsSecret: ""    # secret with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+  placement:
+    prober: ""                  # gce | ec2 | "" (no VM probing)
+    stateBackend: {}            # e.g. { type: gcs, bucket: my-sluice-state } -> PLACEMENT__TF_STATE_BACKEND
