@@ -5,6 +5,7 @@ requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings[yaml]>=2.3",
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]

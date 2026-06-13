@@ -1871,6 +1871,7 @@ source = { editable = "packages/core" }
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings", extra = ["yaml"] },
+    { name = "pyjwt" },
 ]
 
 [package.optional-dependencies]
@@ -1883,6 +1884,7 @@ test = [
 requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", extras = ["yaml"], specifier = ">=2.3" },
+    { name = "pyjwt", specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
 ]
