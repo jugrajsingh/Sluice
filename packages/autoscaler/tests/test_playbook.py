@@ -156,6 +156,86 @@ def test_preempted_vm_destroyed_and_marked():
     assert _of(DestroyVm, p.actions) and _of(MarkStockout, p.actions)
 
 
+def test_preempted_vm_mark_blocks_reprovision_same_cycle_advances_region():
+    # a preempted VM in r1 marks its candidate THIS cycle -> the walk must skip r1 and try r2,
+    # not immediately re-provision the region that just preempted.
+    app = _app()
+    ks = _keys(app)  # [k8s z1, k8s z2, vm r1, vm r2]
+    preempted_r1 = _vm(state=VmState.preempted, region="r1")
+    p = plan(
+        app,
+        Observed(vms=[preempted_r1], depth=QueueDepth(visible=100)),
+        stocked={ks[0]: "x", ks[1]: "x"},  # both k8s stocked
+        now=0,
+        cooldown_until=0,
+    )
+    prov = _of(ProvisionVms, p.actions)
+    assert prov and prov[0].candidate.location == "r2"  # advanced past the just-preempted r1
+
+
+def test_being_destroyed_vm_does_not_count_as_serving_capacity():
+    # a boot-deadline VM is being destroyed this cycle -> it must NOT absorb demand as if serving.
+    app = _app()
+    dying = _vm(state=VmState.provisioning, phase=None, created=0.0, region="r1")
+    p = plan(
+        app,
+        Observed(vms=[dying], depth=QueueDepth(visible=10)),  # desired = 1 unit
+        stocked={},
+        now=10_000,  # past boot deadline -> destroyed
+        cooldown_until=0,
+        boot_deadline_s=600,
+    )
+    assert _of(DestroyVm, p.actions)
+    # the dying VM didn't count as a serving unit, so the cycle still scales up
+    assert p.phase == "Scaling" and (_of(CreatePods, p.actions) or _of(ProvisionVms, p.actions))
+
+
+def test_per_candidate_vm_cap_counts_only_that_candidates_live_vms():
+    # vmA (gce, max 1) and vmB (ec2, max 3): 3 live VMs on vmA must NOT consume vmB's cap.
+    app = AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        placement=[
+            VmCandidate(
+                provider="gce", spec=VmPlacementSpec(pricing="spot", machine_type="a", regions=["rA"], max_vms=1)
+            ),
+            VmCandidate(
+                provider="ec2", spec=VmPlacementSpec(pricing="spot", machine_type="b", regions=["rB"], max_vms=3)
+            ),
+        ],
+    )
+    ks = _keys(app)  # [vm gce rA, vm ec2 rB]
+    live_on_a = [
+        VmView(
+            record=VmRecord(
+                id=f"a{i}",
+                app="m",
+                provider="gce",
+                region="rA",
+                pricing="spot",
+                machine_type="a",
+                state=VmState.running,
+                created_at=0,
+            ),
+            phase="running",
+            workers_running=1,
+        )
+        for i in range(3)
+    ]
+    p = plan(
+        app,
+        Observed(vms=live_on_a, depth=QueueDepth(visible=100)),
+        stocked={ks[0]: "vmA full"},  # vmA stocked; vmB has its own budget
+        now=0,
+        cooldown_until=0,
+    )
+    prov = _of(ProvisionVms, p.actions)
+    assert prov and prov[0].candidate.location == "rB"  # vmB provisions despite 3 live VMs on vmA
+
+
 def test_boot_deadline_exceeded_destroys_and_marks():
     p = plan(
         _app(),

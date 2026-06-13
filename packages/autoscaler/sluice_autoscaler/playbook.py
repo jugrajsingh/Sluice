@@ -96,13 +96,18 @@ def plan(
     actions += [ReapPod(pod=p.pod) for p in observed.pods if p.state in _REAP]
 
     # 2. VM hygiene: destroy stopped; destroy+mark preempted and boot-deadline breaches.
+    destroying: set[str] = set()  # VMs being torn down this cycle — exclude from live capacity
+    vm_marked: dict[str, str] = {}  # vm candidate keys stocked out this cycle — block re-provision
     for v in observed.vms:
         rec = v.record
         if rec.state == VmState.stopped:
             actions.append(DestroyVm(vm_id=rec.id))
+            destroying.add(rec.id)
         elif rec.state == VmState.preempted:
             actions.append(DestroyVm(vm_id=rec.id))
             actions.append(MarkStockout(candidate_key=_vm_key(app, rec), reason="preempted"))
+            destroying.add(rec.id)
+            vm_marked[_vm_key(app, rec)] = "preempted"
         elif (
             rec.state in (VmState.provisioning, VmState.booting)
             and v.phase is None
@@ -110,6 +115,8 @@ def plan(
         ):
             actions.append(DestroyVm(vm_id=rec.id))
             actions.append(MarkStockout(candidate_key=_vm_key(app, rec), reason="boot-deadline"))
+            destroying.add(rec.id)
+            vm_marked[_vm_key(app, rec)] = "boot-deadline"
 
     # 3. Stuck pods: classify the scheduler's verdict and act accordingly.
     #    - capacity exhaustion -> stock out (after the candidate's grace; immediately if the node
@@ -148,11 +155,9 @@ def plan(
     )
     serving_vm_units = 0
     idle_vms: list[VmView] = []
-    live_vm_count = 0
     for v in observed.vms:
-        if v.record.state not in _VM_LIVE:
-            continue
-        live_vm_count += 1
+        if v.record.state not in _VM_LIVE or v.record.id in destroying:
+            continue  # not live, or being torn down this cycle
         if v.phase == "workers_exited":
             idle_vms.append(v)  # warm but idle — restartable, doesn't count as serving
         else:  # running or provisioning/booting -> one serving unit
@@ -179,7 +184,7 @@ def plan(
 
     # 6. Walk candidates from the top, skipping stockouts (persisted + this cycle's) and any
     #    candidate with a surfaced config error (this cycle only — config bugs aren't stockouts).
-    blocked = {**stocked, **newly_marked, **config_errors}
+    blocked = {**stocked, **newly_marked, **config_errors, **vm_marked}
     config_summary = "; ".join(sorted(set(config_errors.values()))) or None
     for cand in expand_candidates(app):
         key = candidate_key(cand)
@@ -188,7 +193,13 @@ def plan(
         if cand.type == "kubernetes":
             actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
             return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
-        n = min(need, max(cand.max_vms - live_vm_count, 0))  # one VM = one unit; per-candidate cap
+        # per-candidate cap: count only the live VMs that belong to THIS candidate's key (not global)
+        live_for_key = sum(
+            1
+            for v in observed.vms
+            if v.record.state in _VM_LIVE and v.record.id not in destroying and _vm_key(app, v.record) == key
+        )
+        n = min(need, max(cand.max_vms - live_for_key, 0))  # one VM = one unit
         if n <= 0:
             continue  # at VM cap for this app; try next candidate
         actions.append(ProvisionVms(candidate=cand, count=n))
