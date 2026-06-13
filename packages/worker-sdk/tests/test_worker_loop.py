@@ -1,87 +1,75 @@
-from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.drivers.memory import MemoryQueue
-from sluice_core.inference_objects import ObjectStoreInferenceObjects
+from sluice_worker.broker_client import TokenExpired
 from sluice_worker.config import WorkerSettings
-from sluice_worker.handler import BaseHandler
 from sluice_worker.worker import Worker
 
 
-class EchoHandler(BaseHandler):
-    def __init__(self):
-        super().__init__()
-        self.loads = 0
-        self.batches = []
+class FakeBroker:
+    def __init__(self, batches=None):
+        self._batches = (
+            batches
+            if batches is not None
+            else [[{"request_id": "r1", "lease_id": "1-0", "body_url": "u1", "result_url": "p1"}], []]
+        )
+        self.acked = []
+        self.extended = []
+        self.bodies = {"u1": b"in"}
+        self.puts = {}
+        self.closed = False
 
-    async def load(self):
-        await super().load()
-        self.loads += 1
+    async def lease(self, max):
+        return self._batches.pop(0) if self._batches else []
+
+    async def get(self, url):
+        return self.bodies.get(url, b"in")
+
+    async def put(self, url, data):
+        self.puts[url] = data
+
+    async def ack(self, lease_id):
+        self.acked.append(lease_id)
+
+    async def extend(self, lease_ids):
+        self.extended.append(list(lease_ids))
+
+    async def aclose(self):
+        self.closed = True
+
+
+class EchoHandler:
+    async def load(self): ...
 
     async def predict(self, batch):
-        self.batches.append(len(batch))
-        return [b"OUT:" + b for b in batch]
+        return [b"out" for _ in batch]
 
-
-def _objects(tmp_path):
-    return ObjectStoreInferenceObjects(store=LocalObjectStore(root=str(tmp_path)))
-
-
-async def _enqueue(q, objs, n):
-    for i in range(n):
-        rid = f"h{i}"
-        await objs.put_request("app", rid, f"img{i}".encode())
-        await q.enqueue("jobs", rid.encode())
+    async def health(self):
+        return True
 
 
 def _settings(**kw):
-    return WorkerSettings(app="app", source="jobs", batch_size=4, wait_seconds=0, max_blank_retries=1, **kw)
+    kw.setdefault("max_jobs", 1000)
+    return WorkerSettings(app="app", batch_size=4, max_blank_retries=1, heartbeat_s=50, **kw)
 
 
-async def test_processes_writes_acks_and_exits_on_empty(tmp_path):
-    q, objs = MemoryQueue(default_lease_s=30), _objects(tmp_path)
-    h = EchoHandler()
-    await _enqueue(q, objs, 6)
-    w = Worker(queue=q, objects=objs, handler=h, settings=_settings(max_jobs=1000))
-    await w.run()
-    assert h.loads == 1  # model loaded once
-    assert await objs.get_result("app", "h0") == b"OUT:img0"
-    assert (await q.depth("jobs")).visible == 0  # all consumed
-    assert max(h.batches) <= 4  # respected batch_size
+async def test_worker_leases_processes_acks_then_exits():
+    br = FakeBroker()
+    await Worker(broker=br, handler=EchoHandler(), settings=_settings()).run()
+    assert br.puts["p1"] == b"out"
+    assert br.acked == ["1-0"]
+    assert br.closed is True  # client closed on exit
 
 
-async def test_exits_on_max_jobs(tmp_path):
-    q, objs = MemoryQueue(default_lease_s=30), _objects(tmp_path)
-    await _enqueue(q, objs, 20)
-    w = Worker(queue=q, objects=objs, handler=EchoHandler(), settings=_settings(max_jobs=8))
-    await w.run()
-    # processed exactly up to the batch boundary >= 8, then exits; remainder stays queued
-    assert (await q.depth("jobs")).visible > 0
+async def test_worker_exits_on_token_expired():
+    class ExpiringBroker(FakeBroker):
+        async def lease(self, max):
+            raise TokenExpired("expired")
+
+    await Worker(broker=ExpiringBroker(), handler=EchoHandler(), settings=_settings()).run()  # returns, no raise
 
 
-async def test_stop_drains_current_batch_then_exits(tmp_path):
-    q, objs = MemoryQueue(default_lease_s=30), _objects(tmp_path)
-    await _enqueue(q, objs, 4)
-
-    class StopHandler(EchoHandler):
-        def __init__(self, w_ref):
-            super().__init__()
-            self.w_ref = w_ref
-
-        async def predict(self, batch):
-            self.w_ref.request_stop()  # stop mid-run
-            return await super().predict(batch)
-
-    w = Worker(queue=q, objects=objs, handler=None, settings=_settings(max_jobs=1000))
-    w._handler = StopHandler(w)  # inject after constructing for the ref
-    await w.run()
-    assert w._handler.loads == 1
-    # current batch finished and acked; loop then exits due to stop flag
-    assert (await q.depth("jobs")).in_flight == 0
-
-
-async def test_redelivery_is_idempotent_via_result_id(tmp_path):
-    q, objs = MemoryQueue(default_lease_s=30), _objects(tmp_path)
-    await _enqueue(q, objs, 1)
-    w = Worker(queue=q, objects=objs, handler=EchoHandler(), settings=_settings(max_jobs=1000))
-    await w.run()
-    # same result id written deterministically -> safe to reprocess
-    assert await objs.result_exists("app", "h0")
+async def test_worker_respects_max_jobs():
+    batches = [
+        [{"request_id": f"r{i}", "lease_id": f"{i}-0", "body_url": "u1", "result_url": f"p{i}"}] for i in range(10)
+    ]
+    br = FakeBroker(batches=batches)
+    await Worker(broker=br, handler=EchoHandler(), settings=_settings(max_jobs=3)).run()
+    assert len(br.acked) == 3

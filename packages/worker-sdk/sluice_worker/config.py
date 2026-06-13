@@ -5,10 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class WorkerSettings(BaseSettings):
     app: str = "app"
-    source: str = "jobs"
+    broker_url: str = "http://sluice-gateway"
+    broker_token: str = ""
     batch_size: int = 8
-    wait_seconds: int = 10
     max_jobs: int = 5000
     max_blank_retries: int = 3
-    lease_seconds: int = 600
+    heartbeat_s: int = 50
     model_config = SettingsConfigDict(env_prefix="WORKER__", env_nested_delimiter="__", extra="ignore")

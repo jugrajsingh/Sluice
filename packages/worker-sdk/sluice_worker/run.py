@@ -4,10 +4,7 @@ import asyncio
 import importlib
 import os
 
-from sluice_core.config import Settings
-from sluice_core.inference_objects import ObjectStoreInferenceObjects
-from sluice_drivers.factory import build_object_store, build_queue
-
+from .broker_client import BrokerClient
 from .config import WorkerSettings
 from .worker import Worker
 
@@ -18,16 +15,10 @@ def load_handler(path: str):
 
 
 async def _amain() -> None:
-    s = Settings()
     ws = WorkerSettings()
     handler_cls = load_handler(os.environ["WORKER__HANDLER"])
-    worker = Worker(
-        queue=build_queue(s),
-        objects=ObjectStoreInferenceObjects(store=build_object_store(s)),
-        handler=handler_cls(),
-        settings=ws,
-    )
-    await worker.run()
+    broker = BrokerClient(base_url=ws.broker_url, token=ws.broker_token)
+    await Worker(broker=broker, handler=handler_cls(), settings=ws).run()
 
 
 def main() -> None:
