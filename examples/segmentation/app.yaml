@@ -1,0 +1,14 @@
+apiVersion: sluice/v1
+kind: App
+metadata: { name: topwear }
+spec:
+  image: ghcr.io/jugrajsingh/sluice-example-segmentation:latest
+  handler: handler:SegHandler
+  queue: { ref: topwear }
+  resources: { gpu: 1, gpuType: nvidia-l4, cpu: 2, memoryGb: 8 }
+  placement:
+    mode: kubernetes
+    pricing: [spot]
+    kubernetes:
+      nodePools:
+        - { pricing: spot, selector: { cloud.google.com/gke-spot: "true" } }

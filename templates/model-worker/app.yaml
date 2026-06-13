@@ -1,0 +1,21 @@
+apiVersion: sluice/v1
+kind: App
+metadata: { name: your-model }
+spec:
+  image: REGISTRY/your-worker:tag
+  handler: handler:MyHandler           # WORKER__HANDLER inside your image
+  queue: { ref: your-model }
+  resources: { gpu: 1, gpuType: nvidia-l4, cpu: 2, memoryGb: 8 }
+  scaling: { messagesPerWorker: 10, maxWorkers: 0, scaleUpCount: 3, scheduleGraceSeconds: 180 }
+  placement:
+    mode: both                         # kubernetes | vm | both
+    pricing: [spot]                    # add on-demand to allow full-price fallback
+    kubernetes:
+      nodePools:
+        - { pricing: spot, selector: { cloud.google.com/gke-spot: "true" } }
+    vm:
+      provider: gce
+      machineType: g2-standard-8
+      acceleratorType: nvidia-l4
+      regions: [us-central1, europe-west3]
+      workersPerVm: 2
