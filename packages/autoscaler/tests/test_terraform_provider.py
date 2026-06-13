@@ -5,9 +5,9 @@ from sluice_autoscaler.terraform import TerraformProvider, classify_error
 from sluice_core.errors import ProvisionFailure
 from sluice_core.models import (
     AppSpec,
-    PlacementSpec,
     ProvisionError,
     ResourcesSpec,
+    VmCandidate,
     VmPlacementSpec,
 )
 
@@ -50,16 +50,18 @@ def _app():
         image="repo/worker:1",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="nvidia-l4"),
-        placement=PlacementSpec(
-            mode="vm",
-            vm=VmPlacementSpec(
+        placement=[
+            VmCandidate(
                 provider="gce",
-                machine_type="g2-standard-8",
-                accelerator_type="nvidia-l4",
-                regions=["r1"],
-                workers_per_vm=2,
-            ),
-        ),
+                spec=VmPlacementSpec(
+                    pricing="spot",
+                    machine_type="g2-standard-8",
+                    accelerator_type="nvidia-l4",
+                    regions=["r1"],
+                    workers_per_vm=2,
+                ),
+            )
+        ],
     )
 
 

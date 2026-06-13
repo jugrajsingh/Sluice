@@ -5,7 +5,9 @@ from sluice_core.testing.fakes import FakeObjectStore
 
 
 def _cand(zone="us-central1-a"):
-    return Candidate(substrate="kubernetes", pricing="spot", provider="k8s", location=zone, gpu_type="nvidia-l4")
+    return Candidate(
+        type="kubernetes", pricing="spot", cluster="in-cluster", selector={"zone": zone}, gpu_type="nvidia-l4"
+    )
 
 
 async def test_mark_and_view():

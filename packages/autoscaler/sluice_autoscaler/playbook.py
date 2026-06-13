@@ -70,8 +70,13 @@ class PlacementPlan(BaseModel):
     candidate: str | None = None
 
 
+def _vm_spec(app: AppSpec):
+    return next((c.spec for c in app.placement if c.type == "vm"), None)
+
+
 def _vm_key(app: AppSpec, rec: VmRecord) -> str:
-    return f"vm/{rec.provider}/{rec.region}/{app.resources.gpu_type or 'none'}/{rec.pricing}"
+    # Mirrors candidate_key() for a vm Candidate (selector segment is always "none").
+    return f"vm/{rec.provider}/{rec.region}/none/{app.resources.gpu_type or 'none'}/{rec.pricing}"
 
 
 def plan(
@@ -84,8 +89,9 @@ def plan(
     boot_deadline_s: int = 600,
 ) -> PlacementPlan:
     actions: list[Action] = []
-    wpv = app.placement.vm.workers_per_vm if app.placement.vm else 1
-    max_vms = app.placement.vm.max_vms if app.placement.vm else 0
+    vm_spec = _vm_spec(app)
+    wpv = vm_spec.workers_per_vm if vm_spec else 1
+    max_vms = vm_spec.max_vms if vm_spec else 0
 
     # 1. Reap exited/failed pods — always, first.
     actions += [ReapPod(pod=p.pod) for p in observed.pods if p.state in _REAP]
@@ -161,7 +167,7 @@ def plan(
         key = candidate_key(cand)
         if key in blocked:
             continue
-        if cand.substrate == "kubernetes":
+        if cand.type == "kubernetes":
             actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
             return PlacementPlan(actions=actions, phase="Scaling", candidate=key)
         n = min(math.ceil(need / wpv), max(max_vms - live_vm_count, 0))

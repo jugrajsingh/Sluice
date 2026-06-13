@@ -22,6 +22,11 @@ _QUOTA = ("Quota", "QUOTA", "quota")
 _AUTH = ("403", "401", "AccessDenied", "credentials", "Unauthorized")
 
 
+def _vm_candidate(app: AppSpec):
+    """The app's burst-VM candidate (provider + spec); None if the app has no vm placement."""
+    return next((c for c in app.placement if c.type == "vm"), None)
+
+
 def classify_error(stderr: str) -> ProvisionError:
     if any(p in stderr for p in _STOCKOUT):
         return ProvisionError.STOCKOUT
@@ -88,7 +93,8 @@ class TerraformProvider:
         return ""  # local state (dev)
 
     def _module_values(self, app: AppSpec, *, name: str, region: str, pricing: str) -> dict[str, object]:
-        vm = app.placement.vm
+        vc = _vm_candidate(app)
+        provider, vm = vc.provider, vc.spec
         env = {
             "WORKER__BROKER_URL": self._broker_url,
             "WORKER__BROKER_TOKEN": mint_worker_token(app=app.name, worker_id=name, key=self._signing_key),
@@ -105,7 +111,7 @@ class TerraformProvider:
             "linger_seconds": vm.linger_seconds,
             "env": env,
         }
-        if vm.provider == "gce":
+        if provider == "gce":
             common |= {
                 "zone": region + self._defaults.get("zone_suffix", "-a"),
                 "machine_type": vm.machine_type,
@@ -123,11 +129,11 @@ class TerraformProvider:
         return common
 
     def _render(self, app: AppSpec, *, name: str, region: str, pricing: str) -> Path:
-        vm = app.placement.vm
+        provider = _vm_candidate(app).provider
         workdir = self._root / app.name / region / name
         workdir.mkdir(parents=True, exist_ok=True)
         values = self._module_values(app, name=name, region=region, pricing=pricing)
-        lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{vm.provider}'))}"]
+        lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{provider}'))}"]
         lines += [f"  {k} = {_hcl(v)}" for k, v in values.items()]
         lines += ["}", 'output "instance_name" { value = module.vm.instance_name }']
         (workdir / "main.tf").write_text("\n".join(lines) + "\n")
@@ -135,7 +141,8 @@ class TerraformProvider:
         return workdir
 
     async def provision(self, app: AppSpec, *, region: str, pricing: str, count: int) -> list[VmRecord]:
-        vm = app.placement.vm
+        vc = _vm_candidate(app)
+        provider, vm = vc.provider, vc.spec
         records: list[VmRecord] = []
         for _ in range(count):
             name = f"sluice-{app.name}-{uuid.uuid4().hex[:6]}"
@@ -159,7 +166,7 @@ class TerraformProvider:
                 VmRecord(
                     id=instance,
                     app=app.name,
-                    provider=vm.provider,
+                    provider=provider,
                     region=region,
                     pricing=pricing,
                     machine_type=vm.machine_type,

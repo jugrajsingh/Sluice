@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -48,15 +48,36 @@ class ResourcesSpec(BaseModel):
     memory_gb: float = Field(2, alias="memoryGb")
 
 
-class NodePoolSpec(BaseModel):
+class Toleration(BaseModel):
+    """A Kubernetes toleration synthesized onto worker pods (e.g. to tolerate the GPU taint)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    key: str = ""
+    operator: Literal["Exists", "Equal"] = "Exists"
+    value: str = ""
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"] = "NoSchedule"
+
+
+class K8sPlacementSpec(BaseModel):
+    """Placement on one Kubernetes cluster.
+
+    `node_selectors` is an ordered list: the controller tries the first selector (e.g. a
+    targeted GPU spot pool), and on stockout falls back to the next (e.g. a broader label).
+    `tolerations` are synthesized onto the pod so it can land on tainted (GPU) nodes.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
     pricing: Literal["spot", "on-demand"] = "spot"
-    selector: dict[str, str] = Field(default_factory=dict)
-    zones: list[str] = Field(default_factory=list)
+    node_selectors: list[dict[str, str]] = Field(default_factory=lambda: [{}], alias="nodeSelectors")
+    tolerations: list[Toleration] = Field(default_factory=list)
+    schedule_grace_s: int = Field(180, alias="scheduleGraceSeconds")
 
 
 class VmPlacementSpec(BaseModel):
+    """Placement on burst VMs of one cloud. The cloud (`gce`/`ec2`) lives on the candidate."""
+
     model_config = ConfigDict(populate_by_name=True)
-    provider: Literal["gce", "ec2"] = "gce"
+    pricing: Literal["spot", "on-demand"] = "spot"
     machine_type: str = Field("", alias="machineType")
     accelerator_type: str = Field("", alias="acceleratorType")
     boot_image: str = Field("", alias="bootImage")
@@ -66,11 +87,35 @@ class VmPlacementSpec(BaseModel):
     max_vms: int = Field(5, alias="maxVms")
 
 
-class PlacementSpec(BaseModel):
-    mode: Literal["kubernetes", "vm", "both"] = "kubernetes"
-    pricing: list[Literal["spot", "on-demand"]] = Field(default_factory=lambda: ["spot"])
-    kubernetes: list[NodePoolSpec] = Field(default_factory=list)
-    vm: VmPlacementSpec | None = None
+class KubernetesCandidate(BaseModel):
+    """A Kubernetes placement candidate.
+
+    `provider` selects the cluster: `in-cluster` (the autoscaler's own cluster) or a name
+    registered in the deployment cluster registry (a mounted kubeconfig).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+    type: Literal["kubernetes"] = "kubernetes"
+    provider: str = "in-cluster"
+    spec: K8sPlacementSpec = Field(default_factory=K8sPlacementSpec)
+
+
+class VmCandidate(BaseModel):
+    """A burst-VM placement candidate. `provider` selects the cloud: `gce` or `ec2`."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    type: Literal["vm"] = "vm"
+    provider: str = "gce"
+    spec: VmPlacementSpec = Field(default_factory=VmPlacementSpec)
+
+
+# Discriminated on `type`; the placement list's order IS the priority (per-app).
+PlacementCandidate = Annotated[KubernetesCandidate | VmCandidate, Field(discriminator="type")]
+
+
+def _default_placement() -> list[KubernetesCandidate]:
+    """Default placement: one in-cluster spot candidate that schedules anywhere."""
+    return [KubernetesCandidate()]
 
 
 class ScalingSpec(BaseModel):
@@ -93,7 +138,7 @@ class AppSpec(BaseModel):
     storage_prefix: str = Field("", alias="storagePrefix")
     resources: ResourcesSpec = Field(default_factory=ResourcesSpec)
     scaling: ScalingSpec = Field(default_factory=ScalingSpec)
-    placement: PlacementSpec = Field(default_factory=PlacementSpec)
+    placement: list[PlacementCandidate] = Field(default_factory=_default_placement)
 
     @model_validator(mode="after")
     def _defaults_from_name(self) -> AppSpec:

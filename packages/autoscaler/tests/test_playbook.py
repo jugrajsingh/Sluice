@@ -13,11 +13,12 @@ from sluice_autoscaler.playbook import (
 )
 from sluice_core.models import (
     AppSpec,
-    NodePoolSpec,
-    PlacementSpec,
+    K8sPlacementSpec,
+    KubernetesCandidate,
     QueueDepth,
     ResourcesSpec,
     ScalingSpec,
+    VmCandidate,
     VmPlacementSpec,
     VmRecord,
     VmState,
@@ -26,21 +27,34 @@ from sluice_core.models import (
 )
 
 
-def _app(mode="both"):
+def _app(with_vm=True):
+    placement = [
+        KubernetesCandidate(
+            provider="in-cluster",
+            spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"zone": "z1"}, {"zone": "z2"}]),
+        )
+    ]
+    if with_vm:
+        placement.append(
+            VmCandidate(
+                provider="gce",
+                spec=VmPlacementSpec(
+                    pricing="spot",
+                    machine_type="g2",
+                    regions=["r1", "r2"],
+                    workers_per_vm=2,
+                    max_vms=3,
+                    linger_seconds=300,
+                ),
+            )
+        )
     return AppSpec(
         name="m",
         image="i",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="l4"),
         scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3, schedule_grace_s=180),
-        placement=PlacementSpec(
-            mode=mode,
-            pricing=["spot"],
-            kubernetes=[NodePoolSpec(pricing="spot", selector={"s": "1"}, zones=["z1", "z2"])],
-            vm=VmPlacementSpec(
-                provider="gce", machine_type="g2", regions=["r1", "r2"], workers_per_vm=2, max_vms=3, linger_seconds=300
-            ),
-        ),
+        placement=placement,
     )
 
 
@@ -79,7 +93,7 @@ def test_backlog_creates_pods_on_first_candidate():
     p = plan(_app(), Observed(depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
     creates = _of(CreatePods, p.actions)
     assert creates and creates[0].count == 3  # capped by scale_up_count
-    assert creates[0].candidate.location == "z1" and p.phase == "Scaling"
+    assert creates[0].candidate.selector == {"zone": "z1"} and p.phase == "Scaling"
 
 
 def test_stuck_pod_marks_and_removes_and_advances():
@@ -95,13 +109,13 @@ def test_stuck_pod_marks_and_removes_and_advances():
     assert _of(RemoveStuckPod, p.actions)
     assert any(m.candidate_key == k_z1 for m in _of(MarkStockout, p.actions))
     creates = _of(CreatePods, p.actions)
-    assert creates and creates[0].candidate.location == "z2"  # next zone
+    assert creates and creates[0].candidate.selector == {"zone": "z2"}  # next selector
 
 
 def test_k8s_exhausted_escalates_to_vm():
     app = _app()
     ks = _keys(app)
-    stocked = {ks[0]: "x", ks[1]: "x"}  # both zones marked
+    stocked = {ks[0]: "x", ks[1]: "x"}  # both k8s selectors marked
     p = plan(app, Observed(depth=QueueDepth(visible=100)), stocked=stocked, now=0, cooldown_until=0)
     prov = _of(ProvisionVms, p.actions)
     assert prov and prov[0].candidate.location == "r1"

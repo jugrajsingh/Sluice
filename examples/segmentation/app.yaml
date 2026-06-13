@@ -7,8 +7,11 @@ spec:
   queue: { ref: topwear }
   resources: { gpu: 1, gpuType: nvidia-l4, cpu: 2, memoryGb: 8 }
   placement:
-    mode: kubernetes
-    pricing: [spot]
-    kubernetes:
-      nodePools:
-        - { pricing: spot, selector: { cloud.google.com/gke-spot: "true" } }
+    - type: kubernetes
+      provider: in-cluster
+      spec:
+        pricing: spot
+        nodeSelectors:
+          - { cloud.google.com/gke-spot: "true" }
+        tolerations:
+          - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }

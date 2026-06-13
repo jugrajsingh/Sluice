@@ -7,15 +7,26 @@ spec:
   queue: { ref: your-model }
   resources: { gpu: 1, gpuType: nvidia-l4, cpu: 2, memoryGb: 8 }
   scaling: { messagesPerWorker: 10, maxWorkers: 0, scaleUpCount: 3, scheduleGraceSeconds: 180 }
+  # placement is an ORDERED list of candidates; the controller tries each in turn and marks
+  # a candidate stocked-out (shared across apps) before advancing to the next.
   placement:
-    mode: both                         # kubernetes | vm | both
-    pricing: [spot]                    # add on-demand to allow full-price fallback
-    kubernetes:
-      nodePools:
-        - { pricing: spot, selector: { cloud.google.com/gke-spot: "true" } }
-    vm:
+    # 1) a targeted GPU spot pool in THIS cluster, then a broader spot selector
+    - type: kubernetes
+      provider: in-cluster                 # in-cluster | <registered external cluster name>
+      spec:
+        pricing: spot
+        nodeSelectors:                      # ordered: try the first, fall back to the next
+          - { cloud.google.com/gke-nodepool: l4-spot, gpu: l4, lifecycle: spot }
+          - { cloud.google.com/gke-spot: "true" }
+        tolerations:
+          - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+        scheduleGraceSeconds: 180
+    # 2) burst to spot VMs across regions when the cluster is out of GPU capacity
+    - type: vm
       provider: gce
-      machineType: g2-standard-8
-      acceleratorType: nvidia-l4
-      regions: [us-central1, europe-west3]
-      workersPerVm: 2
+      spec:
+        pricing: spot
+        machineType: g2-standard-8
+        acceleratorType: nvidia-l4
+        regions: [us-central1, europe-west3]
+        workersPerVm: 2

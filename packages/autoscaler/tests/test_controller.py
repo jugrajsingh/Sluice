@@ -1,18 +1,20 @@
 import json
 
 from sluice_autoscaler.controller import Controller, PodManager
+from sluice_autoscaler.placement import candidate_key, expand_candidates
 from sluice_autoscaler.vm_commands import VmCommander
 from sluice_core.drivers.cache_objectstore import ObjectStoreCache
 from sluice_core.drivers.registry_objectstore import ObjectStoreAppRegistry
 from sluice_core.errors import ProvisionFailure
 from sluice_core.models import (
     AppSpec,
-    NodePoolSpec,
-    PlacementSpec,
+    K8sPlacementSpec,
+    KubernetesCandidate,
     ProvisionError,
     QueueDepth,
     ResourcesSpec,
     ScalingSpec,
+    VmCandidate,
     VmPlacementSpec,
     VmRecord,
     VmState,
@@ -23,20 +25,33 @@ from sluice_core.testing.fakes import FakeObjectStore
 from sluice_core.vm_paths import desired_key, heartbeat_key
 
 
-def _app(mode="both"):
+def _app():
     return AppSpec(
         name="m",
         image="i",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="l4"),
         scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
-        placement=PlacementSpec(
-            mode=mode,
-            pricing=["spot"],
-            kubernetes=[NodePoolSpec(pricing="spot", selector={"s": "1"}, zones=["z1"])],
-            vm=VmPlacementSpec(provider="gce", machine_type="g2", regions=["r1", "r2"], workers_per_vm=2, max_vms=3),
-        ),
+        placement=[
+            KubernetesCandidate(
+                provider="in-cluster", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "1"}])
+            ),
+            VmCandidate(
+                provider="gce",
+                spec=VmPlacementSpec(
+                    pricing="spot", machine_type="g2", regions=["r1", "r2"], workers_per_vm=2, max_vms=3
+                ),
+            ),
+        ],
     )
+
+
+def _k8s_key():
+    return candidate_key(expand_candidates(_app())[0])
+
+
+def _vm_key(region):
+    return candidate_key(next(c for c in expand_candidates(_app()) if c.type == "vm" and c.location == region))
 
 
 class FakeQueue:
@@ -106,7 +121,7 @@ def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=No
 async def test_scale_up_creates_pods_with_candidate_annotation(tmp_path):
     ctl, reg, _ = _controller(tmp_path)
     await ctl.reconcile_one(_app())
-    assert ctl._pods.created == [(3, "kubernetes/k8s/z1/l4/spot")]
+    assert ctl._pods.created == [(3, _k8s_key())]
     assert (await reg.get_status("m")).phase == "Scaling"
 
 
@@ -117,33 +132,33 @@ async def test_stuck_pod_reaped_and_marked(tmp_path):
             state=WorkerState.unschedulable,
             age_s=999,
             reason="ZONE_RESOURCE_POOL_EXHAUSTED",
-            candidate="kubernetes/k8s/z1/l4/spot",
+            candidate=_k8s_key(),
         )
     ]
     cache = ObjectStoreCache(store=FakeObjectStore())
     ctl, _reg, _ = _controller(tmp_path, inspector=FakeInspector(stuck), cache=cache)
     await ctl.reconcile_one(_app())
     assert "p" in ctl._pods.deleted
-    assert await cache.get("stockout/kubernetes/k8s/z1/l4/spot") is not None
+    assert await cache.get(f"stockout/{_k8s_key()}") is not None
 
 
 async def test_k8s_exhausted_provisions_vm(tmp_path):
     cache = ObjectStoreCache(store=FakeObjectStore())
-    await cache.set("stockout/kubernetes/k8s/z1/l4/spot", b"out", ttl_s=600)
+    await cache.set(f"stockout/{_k8s_key()}", b"out", ttl_s=600)
     compute = FakeCompute()
     ctl, reg, _ = _controller(tmp_path, compute=compute, cache=cache)
     await ctl.reconcile_one(_app())
     assert compute.provisioned == [("r1", "spot", 3)]  # ceil(10/2)=5 capped maxVms=3
-    assert (await reg.get_status("m")).candidate == "vm/gce/r1/l4/spot"
+    assert (await reg.get_status("m")).candidate == _vm_key("r1")
 
 
 async def test_provision_stockout_marks_shared_cache_then_next_region(tmp_path):
     cache = ObjectStoreCache(store=FakeObjectStore())
-    await cache.set("stockout/kubernetes/k8s/z1/l4/spot", b"out", ttl_s=600)
+    await cache.set(f"stockout/{_k8s_key()}", b"out", ttl_s=600)
     compute = FakeCompute(fail_regions={"r1"})
     ctl, _reg, _ = _controller(tmp_path, compute=compute, cache=cache)
     await ctl.reconcile_one(_app())
-    assert await cache.get("stockout/vm/gce/r1/l4/spot") is not None
+    assert await cache.get(f"stockout/{_vm_key('r1')}") is not None
     ctl._cooldown_until["m"] = 0.0  # bypass cooldown for the retry
     await ctl.reconcile_one(_app())
     assert ("r2", "spot", 3) in compute.provisioned
