@@ -1,7 +1,8 @@
 # ADR-004: Priced placement playbook with shared stockouts
 
 **Date**: 2026-06-07
-**Status**: Accepted
+**Status**: Accepted — candidate ordering & `candidate_key` shape superseded by ADR-006; the pure
+`plan()` and shared `StockoutBoard` mechanics below are retained.
 **Decision makers**: Jugraj + Claude
 
 ## Context

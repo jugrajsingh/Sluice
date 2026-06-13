@@ -20,10 +20,12 @@ model** — the SDK, charts, autoscaler, and gateway do the rest.
   only when the current one is full. No custom placement logic.
 - **State-aware scaling** — on a GPU stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) the
   autoscaler **HOLDs** instead of piling up unschedulable pods, and surfaces the reason.
-- **Cross-region VM burst** — when a whole region's GPU capacity is stocked out, apps with
-  `placement.mode: vm|both` escalate to Terraform-provisioned spot VMs in other regions
-  (spot first, on-demand only if allowed). Workers only need the queue and the bucket, so
-  it doesn't matter where they run. See [docs/runbook-vm-burst.md](docs/runbook-vm-burst.md).
+- **Ordered, multi-cluster placement** — each app lists `placement` candidates in priority
+  order (in-cluster GPU pools, external clusters by kubeconfig, then Terraform-provisioned
+  burst VMs). When a candidate is stocked out the autoscaler advances to the next, so a
+  (possibly GPU-less) Sluice can place workers across many clusters and clouds. Workers only
+  need the queue and the bucket, so it doesn't matter where they run. See
+  [docs/runbook-vm-burst.md](docs/runbook-vm-burst.md) and `docs/adr/006`.
 - **Interface-first & config-driven** — Queue, ObjectStore, AppRegistry, Cache,
   InferenceObjects are `Protocol`s with swappable drivers selected by config. Swap
   Redis↔SQS or S3↔GCS with a values change, no rebuild.

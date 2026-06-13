@@ -69,11 +69,20 @@ Burst VMs linger briefly for warm restart, then power off; the controller tears 
 
 ## Placement
 
-The autoscaler runs a pure placement playbook: cheapest viable candidate first
-(spot zones → on-demand → cross-region VMs), with stuck-pod detection marking a
-zone/GPU/pricing candidate as stocked out in a shared cache (shared across apps), then
-walking to the next candidate. VM burst is provisioned via Terraform when Kubernetes is
-exhausted and the app permits it. See **ADR-004** (priced placement playbook).
+Each app declares `placement` as an **ordered list of candidates** (`kubernetes` or `vm`); the
+list order is the priority. The autoscaler runs a pure playbook that walks the list, and for a
+Kubernetes candidate synthesizes a pod with the candidate's **node selector** (an ordered list —
+a targeted GPU pool first, a broader label next), GPU **tolerations**, and the `nvidia.com/gpu`
+limit, then lets the scheduler place it. A stuck pod is classified from its
+`PodScheduled=Unschedulable` message: capacity exhaustion marks the candidate stocked out (after
+a per-candidate grace; immediately when the node group is maxed) in a shared cache and advances to
+the next candidate, while an untolerated-taint **config bug** is surfaced rather than stocked out.
+
+A k8s candidate's `provider` selects the cluster — `in-cluster` or a registered external cluster
+(kubeconfig in `AUTOSCALER__CLUSTERS`) — so one (possibly GPU-less) Sluice orchestrates workers
+across **many clusters and clouds**. VM burst is just another candidate, provisioned via Terraform.
+See **ADR-006** (multi-cluster ordered node-aware placement), which supersedes the implicit
+pricing order of **ADR-004** while keeping its pure plan and shared stockouts.
 
 ## External dependencies
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sluice — queue-driven, scale-from-zero GPU inference for any Kubernetes</title>
-<meta name="description" content="Sluice is an open-source, vendor-neutral async inference platform: bursts deepen a queue instead of failing, workers self-terminate, GPUs scale from zero, and placement falls back from spot to on-demand to cross-region VMs.">
+<meta name="description" content="Sluice is an open-source, vendor-neutral async inference platform: bursts deepen a queue instead of failing, workers self-terminate, GPUs scale from zero, and placement walks an ordered list of node pools, clusters, and clouds.">
 <style>
   :root {
     --bg: #0b1220;
@@ -159,10 +159,10 @@
            and exit. Idle apps cost nothing. No CRDs, no Deployment churn.</p>
       </div>
       <div class="card">
-        <h3>Stockout-aware placement</h3>
-        <p>Spot first, on-demand second. Stuck pods mark a zone/GPU/pricing candidate
-           as stocked out (shared across apps), and the playbook walks zones — then
-           provisions VMs in other regions via Terraform when Kubernetes is exhausted.</p>
+        <h3>Ordered, stockout-aware placement</h3>
+        <p>You list placement candidates in priority order. A stuck pod marks its
+           cluster/selector/pricing candidate as stocked out (shared across apps), and the
+           controller advances to the next — another pool, another cluster, then VMs.</p>
       </div>
       <div class="card">
         <h3>Bring your own backends</h3>
@@ -189,8 +189,8 @@
         request ID, and returns a ticket with an ETA. Batches work the same way.</li>
       <li><strong>The controller scales up</strong>
         Queue depth ÷ messages-per-worker says how many workers should exist. The
-        placement playbook picks the cheapest viable candidate — spot zones first,
-        then on-demand, then cross-region VMs.</li>
+        placement playbook tries your ordered placement list top-to-bottom, marking each
+        stocked-out candidate before moving to the next — pools, other clusters, then VMs.</li>
       <li><strong>Workers drain and disappear</strong>
         Each worker pulls IDs, fetches bodies, runs your handler, writes results, and
         exits when the queue is dry. The controller reaps the husks. Back to zero.</li>
@@ -218,13 +218,18 @@
 <span class="k">scaling</span><span class="p">:</span>
   <span class="k">messagesPerWorker</span><span class="p">:</span> <span class="s">8</span>
   <span class="k">maxWorkers</span><span class="p">:</span> <span class="s">0</span>   <span class="c"># unbounded</span>
-<span class="k">placement</span><span class="p">:</span>
-  <span class="k">mode</span><span class="p">:</span> <span class="s">both</span>        <span class="c"># kubernetes | vm | both</span>
-  <span class="k">pricing</span><span class="p">:</span> <span class="s">[spot, on-demand]</span>
-  <span class="k">vm</span><span class="p">:</span>
+<span class="k">placement</span><span class="p">:</span>                    <span class="c"># ordered — tried top to bottom</span>
+  <span class="p">-</span> <span class="k">type</span><span class="p">:</span> <span class="s">kubernetes</span>
+    <span class="k">provider</span><span class="p">:</span> <span class="s">in-cluster</span>
+    <span class="k">spec</span><span class="p">:</span>
+      <span class="k">pricing</span><span class="p">:</span> <span class="s">spot</span>
+      <span class="k">nodeSelectors</span><span class="p">:</span> <span class="s">[{ cloud.google.com/gke-spot: "true" }]</span>
+  <span class="p">-</span> <span class="k">type</span><span class="p">:</span> <span class="s">vm</span>             <span class="c"># burst when the cluster is out of GPUs</span>
     <span class="k">provider</span><span class="p">:</span> <span class="s">gce</span>
-    <span class="k">machineType</span><span class="p">:</span> <span class="s">g2-standard-8</span>
-    <span class="k">regions</span><span class="p">:</span> <span class="s">[us-central1, europe-west3]</span>
+    <span class="k">spec</span><span class="p">:</span>
+      <span class="k">pricing</span><span class="p">:</span> <span class="s">spot</span>
+      <span class="k">machineType</span><span class="p">:</span> <span class="s">g2-standard-8</span>
+      <span class="k">regions</span><span class="p">:</span> <span class="s">[us-central1, europe-west3]</span>
 </code></pre>
       </div>
       <div>
