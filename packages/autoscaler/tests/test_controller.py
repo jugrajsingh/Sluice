@@ -75,7 +75,7 @@ class FakePods(PodManager):
         self.created = []
         self.deleted = []
 
-    async def create_pods(self, app, n, *, selector, candidate_key="", tolerations=None):
+    async def create_pods(self, app, n, *, selector, candidate_key="", tolerations=None, **kw):
         self.created.append((n, candidate_key))
 
     async def delete_pods(self, app, names):

@@ -47,6 +47,7 @@ class PodManager:
         selector: dict[str, str],
         candidate_key: str = "",
         tolerations: list[Toleration] | None = None,
+        **kw,
     ) -> None: ...
     async def delete_pods(self, app: AppSpec, names: list[str]) -> None: ...
 
@@ -186,12 +187,19 @@ class Controller:
                 handle = self._clusters.get(a.candidate.cluster)
                 if handle is None:
                     continue  # cluster not registered in AUTOSCALER__CLUSTERS — can't place here
+                c = a.candidate
                 await handle[0].create_pods(
                     app,
                     a.count,
-                    selector=a.candidate.selector,
-                    candidate_key=candidate_key(a.candidate),
-                    tolerations=a.candidate.tolerations,
+                    selector=c.selector,
+                    candidate_key=candidate_key(c),
+                    tolerations=c.tolerations,
+                    image=c.image,
+                    env=c.env,
+                    args=c.args,
+                    instances=c.instances,
+                    worker_type=c.worker_type,
+                    server=c.server,
                 )
                 SCALE_UP_PODS.labels(app=app.name).inc(a.count)
                 self._cooldown_until[app.name] = now + app.scaling.cooldown_s

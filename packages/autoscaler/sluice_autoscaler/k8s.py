@@ -27,14 +27,16 @@ from kubernetes_asyncio.client import (
     V1Container,
     V1DeleteOptions,
     V1EnvVar,
+    V1HTTPGetAction,
     V1ObjectMeta,
     V1Pod,
     V1PodSpec,
+    V1Probe,
     V1ResourceRequirements,
     V1Toleration,
 )
 from sluice_core.auth import mint_worker_token
-from sluice_core.models import AppSpec, Toleration, WorkerState, WorkerStatus
+from sluice_core.models import AppSpec, ServerSpec, Toleration, WorkerState, WorkerStatus
 
 from .inspector import map_pod_state
 
@@ -71,6 +73,10 @@ def _to_v1_toleration(t: Toleration) -> V1Toleration:
     )
 
 
+def _env_list(d: dict[str, str]) -> list[V1EnvVar]:
+    return [V1EnvVar(name=k, value=v) for k, v in d.items()]
+
+
 def build_worker_pod(
     app: AppSpec,
     *,
@@ -81,26 +87,83 @@ def build_worker_pod(
     worker_id: str,
     candidate_key: str = "",
     tolerations: list[Toleration] | None = None,
+    image: str = "",
+    env: dict[str, str] | None = None,
+    args: list[str] | None = None,
+    instances: int = 1,
+    worker_type: str = "handler",
+    server: ServerSpec | None = None,
 ) -> V1Pod:
+    """Synthesize a worker pod for either archetype.
+
+    - handler: one container running N worker.run replicas via the sequential launcher (or `run`
+      when instances==1); it owns the GPU and carries the broker JWT + model env.
+    - sidecar: a model-server container (image's own entrypoint, owns the GPU, model env, NO broker
+      creds, startup-probed) + an adapter container that holds the JWT and feeds it over localhost.
+    """
+    image = image or app.image
+    resolved_env = dict(env if env is not None else app.env)
+    args = list(args or [])
     token = mint_worker_token(app=app.name, worker_id=worker_id, key=signing_key)
-    env_map = {
+    broker_env = {
         "WORKER__BROKER_URL": broker_url,
         "WORKER__BROKER_TOKEN": token,
         "WORKER__HANDLER": app.handler,
         "WORKER__APP": app.name,
-        **app.env,
     }
-    env = [V1EnvVar(name=k, value=v) for k, v in env_map.items()]
     res = {"cpu": str(app.resources.cpu), "memory": f"{app.resources.memory_gb}Gi"}
     if app.resources.gpu:
         res[GPU_RESOURCE] = str(app.resources.gpu)
-    container = V1Container(
-        name="worker",
-        image=app.image,
-        command=["python", "-m", "sluice_worker.run"],
-        env=env,
-        resources=V1ResourceRequirements(requests=res, limits=res),
-    )
+    gpu_resources = V1ResourceRequirements(requests=res, limits=res)
+
+    if worker_type == "sidecar":
+        if server is None:
+            raise ValueError("sidecar worker requires a server spec")
+        server_c = V1Container(
+            name="server",  # the model's own entrypoint; owns the GPU; holds no broker creds
+            image=image,
+            args=args or None,
+            env=_env_list(resolved_env),
+            resources=gpu_resources,
+            startup_probe=V1Probe(
+                http_get=V1HTTPGetAction(path=server.health_path, port=server.port),
+                period_seconds=10,
+                failure_threshold=max(1, server.ready_timeout_s // 10),
+            ),
+        )
+        adapter_env = {
+            **broker_env,
+            "WORKER__CONCURRENCY": str(server.concurrency or instances),
+            "WORKER__SERVER_PORT": str(server.port),
+            "WORKER__SERVER_REQUEST_PATH": server.request_path,
+            "WORKER__SERVER_METHOD": server.method,
+            "WORKER__SERVER_CONTENT_TYPE": server.content_type,
+            "WORKER__SERVER_HEALTH_PATH": server.health_path,
+            "WORKER__SERVER_READY_TIMEOUT_S": str(server.ready_timeout_s),
+        }
+        adapter_c = V1Container(
+            name="worker",
+            image=image,
+            command=["python", "-m", "sluice_worker.adapter"],
+            env=_env_list(adapter_env),
+        )
+        containers = [server_c, adapter_c]
+    else:  # handler
+        command = (
+            ["python", "-m", "sluice_worker.launch", "--instances", str(instances)]
+            if instances > 1
+            else ["python", "-m", "sluice_worker.run"]
+        )
+        containers = [
+            V1Container(
+                name="worker",
+                image=image,
+                command=command,
+                env=_env_list({**broker_env, **resolved_env}),
+                resources=gpu_resources,
+            )
+        ]
+
     annotations = {CANDIDATE_ANNOTATION: candidate_key} if candidate_key else None
     tols = [_to_v1_toleration(t) for t in _effective_tolerations(app, tolerations or [])]
     return V1Pod(
@@ -114,7 +177,7 @@ def build_worker_pod(
             restart_policy="OnFailure",
             node_selector=selector or None,
             tolerations=tols or None,
-            containers=[container],
+            containers=containers,
         ),
     )
 
@@ -186,6 +249,12 @@ class KubePodManager(_KubeBase):
         selector: dict[str, str],
         candidate_key: str = "",
         tolerations: list[Toleration] | None = None,
+        image: str = "",
+        env: dict[str, str] | None = None,
+        args: list[str] | None = None,
+        instances: int = 1,
+        worker_type: str = "handler",
+        server: ServerSpec | None = None,
     ) -> None:
         if n <= 0:
             return
@@ -200,6 +269,12 @@ class KubePodManager(_KubeBase):
                 worker_id=f"{app.name}-{uuid4().hex[:8]}",
                 candidate_key=candidate_key,
                 tolerations=tolerations,
+                image=image,
+                env=env,
+                args=args,
+                instances=instances,
+                worker_type=worker_type,
+                server=server,
             )
             async with self._create_sem:
                 await self._core().create_namespaced_pod(
