@@ -1,6 +1,6 @@
 import pytest
 from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.errors import KeyNotFound
+from sluice_core.errors import KeyNotFound, SigningUnsupported
 
 
 async def test_put_get_roundtrip(tmp_path):
@@ -16,8 +16,8 @@ async def test_get_missing_raises(tmp_path):
         await s.get("nope")
 
 
-async def test_signed_url_is_file_uri(tmp_path):
+async def test_signed_url_raises_unsupported(tmp_path):
     s = LocalObjectStore(root=str(tmp_path))
     await s.put("k", b"x")
-    url = await s.signed_url("k", expires_s=60)
-    assert url.startswith("file://")
+    with pytest.raises(SigningUnsupported):
+        await s.signed_url("k", expires_s=60)

@@ -31,3 +31,15 @@ class ObjectStoreInferenceObjects:
 
     async def result_exists(self, app: str, request_id: str) -> bool:
         return await self._store.exists(self._key(app, "results", request_id))
+
+    def request_key(self, app: str, request_id: str) -> str:
+        return self._key(app, "requests", request_id)
+
+    def result_key(self, app: str, request_id: str) -> str:
+        return self._key(app, "results", request_id)
+
+    async def signed_get_request(self, app: str, request_id: str, *, expires_s: int) -> str:
+        return await self._store.signed_url(self.request_key(app, request_id), method="GET", expires_s=expires_s)
+
+    async def signed_put_result(self, app: str, request_id: str, *, expires_s: int) -> str:
+        return await self._store.signed_url(self.result_key(app, request_id), method="PUT", expires_s=expires_s)

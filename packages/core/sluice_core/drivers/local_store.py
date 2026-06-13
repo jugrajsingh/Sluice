@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ..errors import KeyNotFound
+from ..errors import KeyNotFound, SigningUnsupported
 
 
 class LocalObjectStore:
@@ -39,8 +39,8 @@ class LocalObjectStore:
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(self._path(key).unlink, True)  # missing_ok=True
 
-    async def signed_url(self, key: str, *, expires_s: int) -> str:
-        return self._path(key).resolve().as_uri()
+    async def signed_url(self, key: str, *, method: str = "GET", expires_s: int) -> str:
+        raise SigningUnsupported(f"local store cannot sign URLs (key={key})")
 
     async def list_keys(self, prefix: str) -> list[str]:
         def _walk() -> list[str]:
