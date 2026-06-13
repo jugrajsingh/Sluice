@@ -1,0 +1,44 @@
+name: ci
+on: [push, pull_request]
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: sluice-core,       path: packages/core,       extras: "--extra test" }
+          - { package: sluice-drivers,    path: packages/drivers,    extras: "--extra test --extra redis --extra aws --extra gcs" }
+          - { package: sluice-autoscaler, path: packages/autoscaler, extras: "--extra test" }
+          - { package: sluice-worker,     path: packages/worker-sdk, extras: "--extra test" }
+          - { package: sluice-gateway,    path: packages/gateway,    extras: "--extra test" }
+          - { package: sluice-console,    path: packages/console,    extras: "--extra test" }
+          - { package: sluice-cli,        path: packages/cli,        extras: "--extra test" }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with: { enable-cache: true, cache-suffix: "${{ matrix.package }}" }
+      - run: uv sync --package ${{ matrix.package }} ${{ matrix.extras }}
+      - run: uv run --package ${{ matrix.package }} pytest ${{ matrix.path }} -v
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uvx ruff@0.15.17 check packages examples
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # helm is preinstalled on GitHub ubuntu runners — no setup action needed
+      - run: helm lint charts/sluice
+      - run: helm template sluice charts/sluice > /dev/null
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v3
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }

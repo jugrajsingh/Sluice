@@ -1,0 +1,2 @@
+# Placement candidate key in a test (kubernetes/k8s/z1/l4/spot) — not a secret.
+e8c5d78a66dda16821ae84390648e8859ed2b102:packages/autoscaler/tests/test_pod_builder.py:generic-api-key:22

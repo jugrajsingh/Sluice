@@ -1,0 +1,46 @@
+name: publish
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (in addition to latest)"
+        default: "dev"
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  packages: write
+env:
+  PREFIX: ghcr.io/${{ github.repository_owner }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: build and push components
+        run: |
+          set -e
+          TAG="${{ steps.tag.outputs.tag }}"
+          for n in gateway autoscaler console worker-base; do
+            docker buildx build --provenance=false --sbom=false \
+              -f "docker/Dockerfile.${n}" \
+              -t "${PREFIX}/sluice-${n}:${TAG}" -t "${PREFIX}/sluice-${n}:latest" \
+              --push .
+          done
+      - name: build and push example (FROM worker-base)
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          docker buildx build --provenance=false --sbom=false \
+            --build-arg "BASE=${PREFIX}/sluice-worker-base:${TAG}" \
+            -t "${PREFIX}/sluice-example-segmentation:${TAG}" \
+            -t "${PREFIX}/sluice-example-segmentation:latest" \
+            --push examples/segmentation
