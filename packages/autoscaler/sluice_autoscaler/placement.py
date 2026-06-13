@@ -33,6 +33,12 @@ class Candidate(BaseModel):
     instances: int = 1
     worker_type: Literal["handler", "sidecar"] = "handler"
     server: ServerSpec | None = None
+    # Resolved vm spec for this candidate (so the renderer never re-selects the first vm candidate).
+    machine_type: str = ""
+    accelerator_type: str = ""
+    boot_image: str = ""
+    linger_seconds: int = 300
+    max_vms: int = 0
 
 
 def _resolve(app: AppSpec, cand) -> dict:
@@ -80,14 +86,20 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
                     )
                 )
         else:  # vm
-            for region in cand.spec.regions:
+            spec = cand.spec
+            for region in spec.regions:
                 out.append(
                     Candidate(
                         type="vm",
-                        pricing=cand.spec.pricing,
+                        pricing=spec.pricing,
                         cluster=cand.provider,
                         location=region,
                         gpu_type=gpu,
+                        machine_type=spec.machine_type,
+                        accelerator_type=spec.accelerator_type,
+                        boot_image=spec.boot_image,
+                        linger_seconds=spec.linger_seconds,
+                        max_vms=spec.max_vms,
                         **resolved,
                     )
                 )

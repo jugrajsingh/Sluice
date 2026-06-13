@@ -71,10 +71,6 @@ class PlacementPlan(BaseModel):
     candidate: str | None = None
 
 
-def _vm_spec(app: AppSpec):
-    return next((c.spec for c in app.placement if c.type == "vm"), None)
-
-
 def _vm_key(app: AppSpec, rec: VmRecord) -> str:
     # Mirrors candidate_key() for a vm Candidate (selector segment is always "none").
     return f"vm/{rec.provider}/{rec.region}/none/{app.resources.gpu_type or 'none'}/{rec.pricing}"
@@ -90,8 +86,6 @@ def plan(
     boot_deadline_s: int = 600,
 ) -> PlacementPlan:
     actions: list[Action] = []
-    vm_spec = _vm_spec(app)
-    max_vms = vm_spec.max_vms if vm_spec else 0
     cand_by_key = {candidate_key(c): c for c in expand_candidates(app)}
 
     def grace_for(p: WorkerStatus) -> int:
@@ -194,7 +188,7 @@ def plan(
         if cand.type == "kubernetes":
             actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
             return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
-        n = min(need, max(max_vms - live_vm_count, 0))  # one VM = one unit
+        n = min(need, max(cand.max_vms - live_vm_count, 0))  # one VM = one unit; per-candidate cap
         if n <= 0:
             continue  # at VM cap for this app; try next candidate
         actions.append(ProvisionVms(candidate=cand, count=n))

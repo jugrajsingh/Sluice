@@ -107,6 +107,32 @@ async def test_destroy_runs_in_vm_workdir(fake_terraform, tmp_path):
     assert any("destroy -auto-approve" in c for c in calls())
 
 
+async def test_selected_candidate_drives_render_not_first_vm_candidate(fake_terraform, tmp_path):
+    # the app's first vm candidate is gce/g2-standard-8; provisioning a DIFFERENT selected candidate
+    # (ec2/g5.xlarge, instances 4) must render THAT, not the first one (heterogeneous-GPU bug fix).
+    from sluice_autoscaler.placement import Candidate
+
+    binary, _calls = fake_terraform
+    cand = Candidate(
+        type="vm",
+        pricing="on-demand",
+        cluster="ec2",
+        location="us-east-1",
+        machine_type="g5.xlarge",
+        boot_image="ami-123",
+        instances=4,
+        image="my/override:1",
+        env={"MODEL__VARIANT": "sam3.1"},
+    )
+    await _provider(binary, tmp_path).provision(
+        _app(), region="us-east-1", pricing="on-demand", count=1, candidate=cand, instances=4
+    )
+    text = next((tmp_path / "work").rglob("main.tf")).read_text()
+    assert "sluice-vm-ec2" in text and '"g5.xlarge"' in text  # the selected candidate's cloud + machine
+    assert '"g2-standard-8"' not in text  # NOT the app's first vm candidate
+    assert "SLUICE_INSTANCES" in text and '"4"' in text and "my/override:1" in text
+
+
 def test_classify_error_table():
     assert classify_error("ZONE_RESOURCE_POOL_EXHAUSTED") is ProvisionError.STOCKOUT
     assert classify_error("InsufficientInstanceCapacity") is ProvisionError.STOCKOUT

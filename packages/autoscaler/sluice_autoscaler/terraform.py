@@ -93,18 +93,30 @@ class TerraformProvider:
         return ""  # local state (dev)
 
     def _module_values(
-        self, app: AppSpec, *, name: str, region: str, pricing: str, instances: int, worker_args, worker_type, server
+        self,
+        app: AppSpec,
+        *,
+        name: str,
+        region: str,
+        pricing: str,
+        provider: str,
+        machine_type: str,
+        accelerator_type: str,
+        boot_image: str,
+        linger_seconds: int,
+        image: str,
+        env_extra: dict[str, str],
+        instances: int,
+        worker_args,
+        worker_type,
+        server,
     ) -> dict[str, object]:
-        vc = _vm_candidate(app)
-        provider, vm = vc.provider, vc.spec
-        image = vc.overrides.image if vc.overrides and vc.overrides.image else app.image
         worker_env = {
             "WORKER__BROKER_URL": self._broker_url,
             "WORKER__BROKER_TOKEN": mint_worker_token(app=app.name, worker_id=name, key=self._signing_key),
             "WORKER__HANDLER": app.handler,
             "WORKER__APP": app.name,
-            **app.env,
-            **((vc.overrides.env if vc.overrides else None) or {}),
+            **env_extra,
         }
         if worker_type == "sidecar" and server is not None:
             worker_env |= {
@@ -131,32 +143,64 @@ class TerraformProvider:
             "spot": pricing == "spot",
             "worker_image": image,
             "workers_per_vm": instances,
-            "linger_seconds": vm.linger_seconds,
+            "linger_seconds": linger_seconds,
             "env": env,
         }
         if provider == "gce":
             common |= {
                 "zone": region + self._defaults.get("zone_suffix", "-a"),
-                "machine_type": vm.machine_type,
-                "accelerator_type": vm.accelerator_type,
+                "machine_type": machine_type,
+                "accelerator_type": accelerator_type,
                 "project": self._defaults.get("project", ""),
             }
-            if vm.boot_image:
-                common["boot_image"] = vm.boot_image
+            if boot_image:
+                common["boot_image"] = boot_image
         else:  # ec2
             common |= {
-                "instance_type": vm.machine_type,
-                "ami": vm.boot_image,
+                "instance_type": machine_type,
+                "ami": boot_image,
                 "iam_instance_profile": self._defaults.get("iam_instance_profile", ""),
             }
         return common
 
-    def _render(self, app: AppSpec, *, name: str, region: str, pricing: str, **worker_kw) -> Path:
-        provider = _vm_candidate(app).provider
+    def _vm_view(self, app: AppSpec, *, candidate, instances, args, worker_type, server) -> dict:
+        """Resolve the vm render inputs from the *selected* candidate, falling back to the app's
+        single vm candidate for direct callers (so a heterogeneous app renders the right machine)."""
+        if candidate is not None:
+            return {
+                "provider": candidate.cluster,
+                "machine_type": candidate.machine_type,
+                "accelerator_type": candidate.accelerator_type,
+                "boot_image": candidate.boot_image,
+                "linger_seconds": candidate.linger_seconds,
+                "image": candidate.image,
+                "env_extra": candidate.env,
+                "instances": candidate.instances,
+                "worker_args": candidate.args,
+                "worker_type": candidate.worker_type,
+                "server": candidate.server,
+            }
+        vc = _vm_candidate(app)
+        ov = vc.overrides
+        return {
+            "provider": vc.provider,
+            "machine_type": vc.spec.machine_type,
+            "accelerator_type": vc.spec.accelerator_type,
+            "boot_image": vc.spec.boot_image,
+            "linger_seconds": vc.spec.linger_seconds,
+            "image": (ov.image if ov and ov.image else app.image),
+            "env_extra": {**app.env, **((ov.env if ov else None) or {})},
+            "instances": instances,
+            "worker_args": list(args or []),
+            "worker_type": worker_type,
+            "server": server,
+        }
+
+    def _render(self, app: AppSpec, *, name: str, region: str, pricing: str, vm_view: dict) -> Path:
         workdir = self._root / app.name / region / name
         workdir.mkdir(parents=True, exist_ok=True)
-        values = self._module_values(app, name=name, region=region, pricing=pricing, **worker_kw)
-        lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{provider}'))}"]
+        values = self._module_values(app, name=name, region=region, pricing=pricing, **vm_view)
+        lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{vm_view["provider"]}'))}"]
         lines += [f"  {k} = {_hcl(v)}" for k, v in values.items()]
         lines += ["}", 'output "instance_name" { value = module.vm.instance_name }']
         (workdir / "main.tf").write_text("\n".join(lines) + "\n")
@@ -170,23 +214,19 @@ class TerraformProvider:
         region: str,
         pricing: str,
         count: int,
+        candidate=None,
         instances: int = 1,
         args: list[str] | None = None,
         worker_type: str = "handler",
         server=None,
     ) -> list[VmRecord]:
-        vc = _vm_candidate(app)
-        provider, vm = vc.provider, vc.spec
-        worker_kw = {
-            "instances": instances,
-            "worker_args": list(args or []),
-            "worker_type": worker_type,
-            "server": server,
-        }
+        vm_view = self._vm_view(
+            app, candidate=candidate, instances=instances, args=args, worker_type=worker_type, server=server
+        )
         records: list[VmRecord] = []
         for _ in range(count):
             name = f"sluice-{app.name}-{uuid.uuid4().hex[:6]}"
-            workdir = self._render(app, name=name, region=region, pricing=pricing, **worker_kw)
+            workdir = self._render(app, name=name, region=region, pricing=pricing, vm_view=vm_view)
             for args in (
                 ("init", "-input=false"),
                 ("plan", "-out=plan.tfplan", "-input=false"),
@@ -206,10 +246,10 @@ class TerraformProvider:
                 VmRecord(
                     id=instance,
                     app=app.name,
-                    provider=provider,
+                    provider=vm_view["provider"],
                     region=region,
                     pricing=pricing,
-                    machine_type=vm.machine_type,
+                    machine_type=vm_view["machine_type"],
                     state=VmState.provisioning,
                     created_at=time.time(),
                 )

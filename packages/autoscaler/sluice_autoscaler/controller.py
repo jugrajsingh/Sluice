@@ -211,6 +211,7 @@ class Controller:
                         region=c.location,
                         pricing=c.pricing,
                         count=a.count,
+                        candidate=c,  # the SELECTED candidate drives the render (machine/provider/image/env)
                         instances=c.instances,
                         args=c.args,
                         worker_type=c.worker_type,
