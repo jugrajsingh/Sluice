@@ -1,4 +1,4 @@
-from sluice_autoscaler.inspector import map_pod_state
+from sluice_autoscaler.inspector import classify_unschedulable, map_pod_state
 from sluice_core.models import WorkerState
 
 
@@ -57,3 +57,25 @@ def test_succeeded_is_exited():
 
 def test_failed():
     assert map_pod_state(_pod("Failed"))[0] == WorkerState.failed
+
+
+def test_classify_unschedulable_capacity():
+    assert classify_unschedulable("0/5 nodes are available: 5 Insufficient nvidia.com/gpu.") == "capacity"
+    assert classify_unschedulable("node(s) didn't match Pod's node affinity/selector") == "capacity"
+    assert classify_unschedulable("ZONE_RESOURCE_POOL_EXHAUSTED") == "capacity"
+
+
+def test_classify_unschedulable_terminal_capacity():
+    # cluster autoscaler can't grow the pool any further -> no point waiting out the grace
+    assert classify_unschedulable("pod didn't trigger scale-up: max node group size reached") == "terminal_capacity"
+    assert classify_unschedulable("NotTriggerScaleUp: max node group size reached") == "terminal_capacity"
+
+
+def test_classify_unschedulable_taint_is_config_bug():
+    msg = "0/3 nodes are available: 3 node(s) had untolerated taint {nvidia.com/gpu: present}"
+    assert classify_unschedulable(msg) == "taint"
+
+
+def test_classify_unschedulable_other_and_none():
+    assert classify_unschedulable("") == "other"
+    assert classify_unschedulable(None) == "other"

@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from sluice_core.models import AppSpec, QueueDepth, VmRecord, VmState, WorkerState, WorkerStatus
 
+from .inspector import classify_unschedulable
 from .placement import Candidate, candidate_key, expand_candidates
 
 _REAP = {WorkerState.exited, WorkerState.failed}
@@ -92,6 +93,11 @@ def plan(
     vm_spec = _vm_spec(app)
     wpv = vm_spec.workers_per_vm if vm_spec else 1
     max_vms = vm_spec.max_vms if vm_spec else 0
+    cand_by_key = {candidate_key(c): c for c in expand_candidates(app)}
+
+    def grace_for(p: WorkerStatus) -> int:
+        c = cand_by_key.get(p.candidate or "")
+        return c.schedule_grace_s if c else app.scaling.schedule_grace_s
 
     # 1. Reap exited/failed pods — always, first.
     actions += [ReapPod(pod=p.pod) for p in observed.pods if p.state in _REAP]
@@ -112,11 +118,25 @@ def plan(
             actions.append(DestroyVm(vm_id=rec.id))
             actions.append(MarkStockout(candidate_key=_vm_key(app, rec), reason="boot-deadline"))
 
-    # 3. Stuck pods: mark their candidate, remove, retry elsewhere this same cycle.
+    # 3. Stuck pods: classify the scheduler's verdict and act accordingly.
+    #    - capacity exhaustion -> stock out (after the candidate's grace; immediately if the node
+    #      group is already maxed) and remove, so we retry the next candidate this same cycle.
+    #    - untolerated taint -> a config bug, NOT a stockout: surface it and skip the candidate
+    #      this cycle only; never persist a mark and never churn the pod (the operator must fix it).
     newly_marked: dict[str, str] = {}
+    config_errors: dict[str, str] = {}
+    removing: set[str] = set()
     for p in observed.pods:
-        if p.state in _STUCK and p.age_s > app.scaling.schedule_grace_s:
+        if p.state not in _STUCK:
+            continue
+        kind = classify_unschedulable(p.reason)
+        if kind == "taint":
+            if p.candidate:
+                config_errors[p.candidate] = p.reason or "untolerated taint"
+            continue
+        if kind == "terminal_capacity" or p.age_s > grace_for(p):
             actions.append(RemoveStuckPod(pod=p.pod))
+            removing.add(p.pod)
             if p.candidate:
                 reason = p.reason or "schedule-grace-exceeded"
                 actions.append(MarkStockout(candidate_key=p.candidate, reason=reason))
@@ -125,9 +145,13 @@ def plan(
     if app.desired_state == "Paused":
         return PlacementPlan(actions=actions, phase="Paused")
 
-    # 4. Capacity accounting (pods + VM workers together).
-    grace = app.scaling.schedule_grace_s
-    live_pods = sum(1 for p in observed.pods if p.state in _POD_ACTIVE or (p.state in _STUCK and p.age_s <= grace))
+    # 4. Capacity accounting (pods + VM workers together). Pods we're removing this cycle don't
+    #    count; stuck pods count only while still inside their candidate's grace window.
+    live_pods = sum(
+        1
+        for p in observed.pods
+        if p.pod not in removing and (p.state in _POD_ACTIVE or (p.state in _STUCK and p.age_s <= grace_for(p)))
+    )
     vm_workers = 0
     idle_vms: list[VmView] = []
     live_vm_count = 0
@@ -161,20 +185,22 @@ def plan(
     if now < cooldown_until:
         return PlacementPlan(actions=actions, phase="Scaling", reason="cooldown")
 
-    # 6. Walk candidates from the top, skipping stockout marks (incl. this cycle's).
-    blocked = {**stocked, **newly_marked}
+    # 6. Walk candidates from the top, skipping stockouts (persisted + this cycle's) and any
+    #    candidate with a surfaced config error (this cycle only — config bugs aren't stockouts).
+    blocked = {**stocked, **newly_marked, **config_errors}
+    config_summary = "; ".join(sorted(set(config_errors.values()))) or None
     for cand in expand_candidates(app):
         key = candidate_key(cand)
         if key in blocked:
             continue
         if cand.type == "kubernetes":
             actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
-            return PlacementPlan(actions=actions, phase="Scaling", candidate=key)
+            return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
         n = min(math.ceil(need / wpv), max(max_vms - live_vm_count, 0))
         if n <= 0:
             continue  # at VM cap for this app; try next candidate
         actions.append(ProvisionVms(candidate=cand, count=n))
-        return PlacementPlan(actions=actions, phase="Scaling", candidate=key)
+        return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
 
     reasons = ", ".join(sorted(set(blocked.values()))) or "no candidates"
     return PlacementPlan(actions=actions, phase="Held", reason=reasons)

@@ -62,8 +62,28 @@ def _keys(app):
     return [candidate_key(c) for c in expand_candidates(app)]
 
 
-def _pod(state, age=0, cand=None, name="p"):
-    return WorkerStatus(pod=name, state=state, age_s=age, candidate=cand)
+def _pod(state, age=0, cand=None, name="p", reason=None):
+    return WorkerStatus(pod=name, state=state, age_s=age, candidate=cand, reason=reason)
+
+
+def _k8s_app(grace=180, selectors=None):
+    return AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3, schedule_grace_s=180),
+        placement=[
+            KubernetesCandidate(
+                provider="in-cluster",
+                spec=K8sPlacementSpec(
+                    pricing="spot",
+                    node_selectors=selectors or [{"zone": "z1"}, {"zone": "z2"}],
+                    schedule_grace_s=grace,
+                ),
+            )
+        ],
+    )
 
 
 def _vm(vm_id="v1", state=VmState.running, phase=None, workers=0, created=0.0, region="r1"):
@@ -202,3 +222,62 @@ def test_max_workers_caps_desired_across_substrates():
     p = plan(app, Observed(depth=QueueDepth(visible=1000)), stocked={}, now=0, cooldown_until=0)
     creates = _of(CreatePods, p.actions)
     assert creates and creates[0].count == 2  # capped by maxWorkers, not scale_up_count
+
+
+# --- unschedulable classification (Task 4) ---
+
+
+def test_terminal_capacity_stockouts_before_grace_elapses():
+    app = _k8s_app()  # grace 180
+    k0 = _keys(app)[0]
+    stuck = _pod(
+        WorkerState.unschedulable, age=5, cand=k0, reason="pod didn't trigger scale-up: max node group size reached"
+    )
+    p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
+    # age 5 << grace 180, but the node group is maxed — no point waiting it out
+    assert any(a.pod == "p" for a in _of(RemoveStuckPod, p.actions))
+    assert any(m.candidate_key == k0 for m in _of(MarkStockout, p.actions))
+
+
+def test_capacity_within_grace_waits_without_stockout():
+    app = _k8s_app()  # grace 180
+    k0 = _keys(app)[0]
+    stuck = _pod(
+        WorkerState.unschedulable, age=5, cand=k0, reason="0/5 nodes are available: 5 Insufficient nvidia.com/gpu."
+    )
+    p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
+    # still inside the grace window — wait for the autoscaler, don't stock out or remove
+    assert not _of(RemoveStuckPod, p.actions) and not _of(MarkStockout, p.actions)
+
+
+def test_per_candidate_grace_overrides_app_default():
+    app = _k8s_app(grace=30)  # candidate grace 30, app-level default 180
+    k0 = _keys(app)[0]
+    stuck = _pod(WorkerState.unschedulable, age=60, cand=k0, reason="Insufficient nvidia.com/gpu")
+    p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
+    # age 60 > candidate grace 30 (though < app default 180) -> stock out
+    assert any(m.candidate_key == k0 for m in _of(MarkStockout, p.actions))
+
+
+def test_untolerated_taint_surfaces_and_advances_without_stockout():
+    app = _k8s_app()
+    k0 = _keys(app)[0]
+    taint = "0/3 nodes are available: 3 node(s) had untolerated taint {nvidia.com/gpu: present}"
+    stuck = _pod(WorkerState.unschedulable, age=999, cand=k0, reason=taint)
+    p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
+    # config bug: never stock out, never churn the pod — but skip the bad selector this cycle
+    assert not _of(MarkStockout, p.actions)
+    assert not any(a.pod == "p" for a in _of(RemoveStuckPod, p.actions))
+    creates = _of(CreatePods, p.actions)
+    assert creates and creates[0].candidate.selector == {"zone": "z2"}  # advanced past the misconfigured selector
+    assert p.reason and "untolerated taint" in p.reason  # surfaced to the operator
+
+
+def test_all_selectors_misconfigured_holds_with_config_reason():
+    app = _k8s_app(selectors=[{"zone": "z1"}])
+    k0 = _keys(app)[0]
+    taint = "node(s) had untolerated taint {nvidia.com/gpu: present}"
+    stuck = _pod(WorkerState.unschedulable, age=999, cand=k0, reason=taint)
+    p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
+    assert not _of(MarkStockout, p.actions) and not _of(CreatePods, p.actions)
+    assert p.phase == "Held" and "untolerated taint" in p.reason
