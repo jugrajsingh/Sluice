@@ -4,26 +4,40 @@ from sluice_worker.launch import Launcher
 
 
 async def _settle():
-    for _ in range(6):
+    for _ in range(8):
         await asyncio.sleep(0)
+
+
+class P:
+    """Fake worker process: wait() blocks until finish()/terminate()."""
+
+    def __init__(self):
+        self._done = asyncio.Event()
+        self._code = 0
+        self.returncode = None
+        self.terminated = False
+
+    async def wait(self):
+        await self._done.wait()
+        return self._code
+
+    def finish(self, code=0):
+        self._code = code
+        self.returncode = code
+        self._done.set()
+
+    def terminate(self):
+        self.terminated = True
+        if not self._done.is_set():
+            self._code = -15
+            self.returncode = -15
+            self._done.set()
 
 
 async def test_starts_each_only_after_previous_is_ready():
     started: list[int] = []
     readied: list[int] = []
     gates = [asyncio.Event() for _ in range(3)]
-
-    class P:
-        def __init__(self):
-            self._done = asyncio.Event()
-
-        async def wait(self):
-            await self._done.wait()
-            return 0
-
-        def finish(self):
-            self._done.set()
-
     procs: list[P] = []
 
     async def spawn(i):
@@ -32,7 +46,7 @@ async def test_starts_each_only_after_previous_is_ready():
         procs.append(p)
         return p
 
-    async def wait_ready(i):
+    async def wait_ready(_proc, i):
         readied.append(i)
         await gates[i].wait()
 
@@ -48,19 +62,63 @@ async def test_starts_each_only_after_previous_is_ready():
     gates[2].set()
     await _settle()
     for p in procs:
-        p.finish()  # all loaded; supervise until they exit
-    assert await task == 3
+        p.finish(0)  # all loaded; clean drain
+    assert await task == 0
 
 
-async def test_runs_all_instances_and_returns_count():
-    class P:
-        async def wait(self):
-            return 0
+async def test_all_clean_exit_returns_zero():
+    procs: list[P] = []
 
     async def spawn(_i):
-        return P()
+        p = P()
+        procs.append(p)
+        return p
 
-    async def wait_ready(_i):
+    async def wait_ready(_proc, _i):
         return None
 
-    assert await Launcher(instances=4, spawn=spawn, wait_ready=wait_ready).run() == 4
+    task = asyncio.create_task(Launcher(instances=2, spawn=spawn, wait_ready=wait_ready).run())
+    await _settle()
+    for p in procs:
+        p.finish(0)
+    assert await task == 0
+
+
+async def test_child_crash_terminates_siblings_and_propagates_code():
+    procs: list[P] = []
+
+    async def spawn(_i):
+        p = P()
+        procs.append(p)
+        return p
+
+    async def wait_ready(_proc, _i):
+        return None
+
+    task = asyncio.create_task(Launcher(instances=3, spawn=spawn, wait_ready=wait_ready).run())
+    await _settle()  # all 3 spawned + supervising
+    procs[1].finish(7)  # one replica crashes nonzero
+    assert await task == 7  # the unit exits nonzero (-> pod/VM restart)
+    assert procs[0].terminated and procs[2].terminated  # siblings torn down
+
+
+async def test_child_death_before_ready_tears_down_and_raises():
+    procs: list[P] = []
+
+    async def spawn(_i):
+        p = P()
+        procs.append(p)
+        return p
+
+    async def wait_ready(proc, i):
+        if i == 0:
+            raise RuntimeError("worker 0 exited before ready")  # what _wait_marker raises on early death
+        return None
+
+    task = asyncio.create_task(Launcher(instances=3, spawn=spawn, wait_ready=wait_ready).run())
+    try:
+        await task
+        raise AssertionError("expected the launcher to propagate the startup failure")
+    except RuntimeError:
+        pass
+    assert len(procs) == 1 and procs[0].terminated  # only child 0 spawned, and it was torn down

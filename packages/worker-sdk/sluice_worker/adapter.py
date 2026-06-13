@@ -10,6 +10,7 @@ response is the result; the adapter is model-agnostic.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 
 import httpx
@@ -59,15 +60,21 @@ class Adapter:
         raise TimeoutError(f"model server not ready within {self._ready_timeout_s}s")
 
     async def _handle(self, item: dict) -> None:
-        body = await self._broker.get(item["body_url"])
-        resp = await self._server.request(
-            self._method, self._request_path, content=body, headers={"content-type": self._content_type}
-        )
-        if 200 <= resp.status_code < 300:
-            await self._broker.put(item["result_url"], resp.content)
-            await self._broker.ack(item["lease_id"])
-        else:
-            await self._broker.nack(item["lease_id"])
+        # The dispatch engine never sees exceptions from here (that would leak the lease); on any
+        # failure we nack so the lease is retried.
+        try:
+            body = await self._broker.get(item["body_url"])
+            resp = await self._server.request(
+                self._method, self._request_path, content=body, headers={"content-type": self._content_type}
+            )
+            if 200 <= resp.status_code < 300:
+                await self._broker.put(item["result_url"], resp.content)
+                await self._broker.ack(item["lease_id"])
+            else:
+                await self._broker.nack(item["lease_id"])
+        except Exception:
+            with contextlib.suppress(Exception):  # best effort; a lost nack just lets the lease lapse
+                await self._broker.nack(item["lease_id"])
 
     def request_stop(self) -> None:
         self._stop = True

@@ -74,6 +74,17 @@ async def test_nacks_on_server_5xx_without_writing_result():
     assert "https://s3/r" not in broker.puts
 
 
+async def test_handle_error_nacks_and_does_not_raise():
+    # a transport failure must not escape into the dispatch engine (which would leak the lease) —
+    # the adapter nacks so the lease is retried.
+    item = {"lease_id": "L3", "body_url": "https://s3/b", "result_url": "https://s3/r"}
+    broker = FakeBroker([item], {})  # body_url missing -> broker.get raises KeyError
+
+    await _adapter(broker, _server(lambda r: httpx.Response(200, content=b"x"))).run()
+    assert broker.nacked == ["L3"] and broker.acked == []
+    assert "https://s3/r" not in broker.puts
+
+
 async def test_wait_ready_polls_until_healthy():
     calls = {"n": 0}
 
