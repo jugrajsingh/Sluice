@@ -1,0 +1,12 @@
+# gitleaks configuration for Sluice.
+# Extends the default ruleset and allowlists known-safe test fixtures.
+title = "sluice"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placement candidate keys in tests are routing identifiers (substrate/provider/zone/gpu/pricing), not secrets"
+regexes = [
+  '''(kubernetes|vm)/[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9._-]+/(spot|on-demand)''',
+]
