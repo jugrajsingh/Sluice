@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+from sluice_core.auth import mint_worker_token
 from sluice_core.errors import ProvisionFailure
 from sluice_core.models import AppSpec, ProvisionError, VmRecord, VmState
 
@@ -51,7 +52,8 @@ class TerraformProvider:
         work_root: str,
         state_backend: dict[str, str],
         provider_defaults: dict[str, str],
-        worker_env: dict[str, str],
+        broker_url: str,
+        signing_key: str,
         prober=None,
     ) -> None:
         self._tf = binary
@@ -59,7 +61,8 @@ class TerraformProvider:
         self._root = Path(work_root)
         self._backend = state_backend
         self._defaults = provider_defaults
-        self._worker_env = worker_env
+        self._broker_url = broker_url
+        self._signing_key = signing_key
         self._prober = prober
 
     async def _run(self, workdir: Path, *args: str) -> tuple[int, str, str]:
@@ -87,9 +90,9 @@ class TerraformProvider:
     def _module_values(self, app: AppSpec, *, name: str, region: str, pricing: str) -> dict[str, object]:
         vm = app.placement.vm
         env = {
-            **self._worker_env,
+            "WORKER__BROKER_URL": self._broker_url,
+            "WORKER__BROKER_TOKEN": mint_worker_token(app=app.name, worker_id=name, key=self._signing_key),
             "WORKER__HANDLER": app.handler,
-            "WORKER__SOURCE": app.queue_ref,
             "WORKER__APP": app.name,
             **app.env,
         }

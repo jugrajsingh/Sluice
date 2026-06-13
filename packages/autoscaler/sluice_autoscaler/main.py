@@ -22,7 +22,7 @@ from sluice_core.interfaces import AppRegistry
 from sluice_drivers.factory import build_queue
 
 from .controller import Controller
-from .k8s import KubeClusterInspector, KubePodManager, backend_env_from_settings
+from .k8s import KubeClusterInspector, KubePodManager
 
 CYCLE_SECONDS = int(os.getenv("AUTOSCALER__CYCLE_SECONDS", "15"))
 CYCLE_DEADLINE_SECONDS = int(os.getenv("AUTOSCALER__CYCLE_DEADLINE_SECONDS", "60"))
@@ -114,13 +114,15 @@ async def run() -> None:
     in_cluster = os.getenv("AUTOSCALER__IN_CLUSTER", "1") == "1"
     workers_ns = os.getenv("AUTOSCALER__WORKERS_NAMESPACE", "default")
     kube_kw = {"in_cluster": in_cluster, "config_path": os.getenv("KUBECONFIG"), "namespace": workers_ns}
+    broker_url = os.getenv("AUTOSCALER__BROKER_URL", "http://sluice-gateway")
+    signing_key = os.getenv("AUTOSCALER__SIGNING_KEY", "")
 
     from sluice_drivers.factory import build_cache, build_object_store, build_registry
 
     store = build_object_store(settings)
     registry = build_registry(settings, store=store)
     cache = build_cache(settings, store=store)
-    pods = KubePodManager(backend_env=backend_env_from_settings(settings), **kube_kw)
+    pods = KubePodManager(broker_url=broker_url, signing_key=signing_key, **kube_kw)
     inspector = KubeClusterInspector(**kube_kw)
     for c in (pods, inspector):
         await c.open()
@@ -134,7 +136,8 @@ async def run() -> None:
             work_root=settings.placement.tf_work_root,
             state_backend=settings.placement.tf_state_backend,
             provider_defaults=settings.placement.provider_defaults,
-            worker_env=backend_env_from_settings(settings),
+            broker_url=broker_url,
+            signing_key=signing_key,
             prober=_build_prober(settings),
         )
 

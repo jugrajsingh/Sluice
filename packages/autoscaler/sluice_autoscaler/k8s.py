@@ -16,9 +16,9 @@ namespaces). The spec store (AppRegistry) lives outside Kubernetes entirely.
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from kubernetes_asyncio import config
 from kubernetes_asyncio.client import (
@@ -32,7 +32,7 @@ from kubernetes_asyncio.client import (
     V1PodSpec,
     V1ResourceRequirements,
 )
-from sluice_core.config import Settings
+from sluice_core.auth import mint_worker_token
 from sluice_core.models import AppSpec, WorkerState, WorkerStatus
 
 from .inspector import map_pod_state
@@ -45,22 +45,21 @@ CANDIDATE_ANNOTATION = "sluice.jugraj.dev/candidate"
 _REAP_STATES = {WorkerState.exited, WorkerState.failed}
 
 
-def backend_env_from_settings(s: Settings) -> dict[str, str]:
-    return {
-        "QUEUE__BACKEND": s.queue.backend,
-        "QUEUE__OPTIONS": json.dumps(s.queue.options),
-        "OBJECT_STORE__BACKEND": s.object_store.backend,
-        "OBJECT_STORE__OPTIONS": json.dumps(s.object_store.options),
-    }
-
-
 def build_worker_pod(
-    app: AppSpec, *, selector: dict[str, str], backend_env: dict[str, str], namespace: str, candidate_key: str = ""
+    app: AppSpec,
+    *,
+    selector: dict[str, str],
+    namespace: str,
+    broker_url: str,
+    signing_key: str,
+    worker_id: str,
+    candidate_key: str = "",
 ) -> V1Pod:
+    token = mint_worker_token(app=app.name, worker_id=worker_id, key=signing_key)
     env_map = {
-        **backend_env,
+        "WORKER__BROKER_URL": broker_url,
+        "WORKER__BROKER_TOKEN": token,
         "WORKER__HANDLER": app.handler,
-        "WORKER__SOURCE": app.queue_ref,
         "WORKER__APP": app.name,
         **app.env,
     }
@@ -128,11 +127,19 @@ def _owned_selector(app_name: str) -> str:
 class KubePodManager(_KubeBase):
     """Synthesizes bare worker pods from the AppSpec; reaps exited/failed pods."""
 
-    def __init__(self, *, max_concurrent_creates: int = 50, backend_env: dict[str, str] | None = None, **kw) -> None:
+    def __init__(
+        self,
+        *,
+        max_concurrent_creates: int = 50,
+        broker_url: str = "http://sluice-gateway",
+        signing_key: str = "",
+        **kw,
+    ) -> None:
         super().__init__(**kw)
         self._create_sem = asyncio.Semaphore(max_concurrent_creates)
         self._delete_options = V1DeleteOptions()
-        self._env = backend_env or {}
+        self._broker_url = broker_url
+        self._signing_key = signing_key
 
     def _core(self) -> CoreV1Api:
         assert self._api_client is not None
@@ -144,7 +151,13 @@ class KubePodManager(_KubeBase):
 
         async def _create() -> None:
             pod = build_worker_pod(
-                app, selector=selector, backend_env=self._env, namespace=self._ns, candidate_key=candidate_key
+                app,
+                selector=selector,
+                namespace=self._ns,
+                broker_url=self._broker_url,
+                signing_key=self._signing_key,
+                worker_id=f"{app.name}-{uuid4().hex[:8]}",
+                candidate_key=candidate_key,
             )
             async with self._create_sem:
                 await self._core().create_namespaced_pod(

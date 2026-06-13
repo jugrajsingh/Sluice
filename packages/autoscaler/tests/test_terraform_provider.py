@@ -70,7 +70,8 @@ def _provider(binary, tmp_path):
         work_root=str(tmp_path / "work"),
         state_backend={"type": "s3", "bucket": "b", "region": "us-east-1"},
         provider_defaults={"project": "proj", "zone_suffix": "-a"},
-        worker_env={"QUEUE__BACKEND": "sqs"},
+        broker_url="http://sluice-gateway",
+        signing_key="tf-signing-key",  # gitleaks:allow (test fixture, not a secret)
     )
 
 
