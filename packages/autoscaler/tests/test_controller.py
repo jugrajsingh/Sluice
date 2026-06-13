@@ -89,7 +89,7 @@ class FakeCompute:
         self.destroyed = []
         self.records = []
 
-    async def provision(self, app, *, region, pricing, count):
+    async def provision(self, app, *, region, pricing, count, **kw):
         if region in self.fail:
             raise ProvisionFailure(ProvisionError.STOCKOUT, "ZONE_RESOURCE_POOL_EXHAUSTED")
         self.provisioned.append((region, pricing, count))

@@ -26,10 +26,12 @@ class VmAgent:
         app: str,
         vm_id: str,
         worker_image: str,
-        workers: int,
+        instances: int,
         linger_s: int,
         env: dict[str, str],
         runner: Runner,
+        worker_type: str = "handler",
+        args: list[str] | None = None,
         root: str = "sluice",
         poll_s: float = 15.0,
     ) -> None:
@@ -37,7 +39,9 @@ class VmAgent:
         self._app = app
         self._vm = vm_id
         self._image = worker_image
-        self._workers = workers
+        self._instances = instances
+        self._worker_type = worker_type
+        self._args = list(args or [])
         self._linger = linger_s
         self._env = env
         self._run_cmd = runner
@@ -45,33 +49,55 @@ class VmAgent:
         self._poll = poll_s
         self._idle_since: float | None = None
 
+    def _docker_run(
+        self, name: str, env: dict[str, str], *, gpus: bool, host_net: bool, image_cmd: list[str]
+    ) -> list[str]:
+        cmd = ["docker", "run", "-d", "--rm"]
+        if gpus:
+            cmd += ["--gpus", "all"]
+        if host_net:
+            cmd += ["--network", "host"]  # so the adapter reaches the model server at localhost
+        cmd += ["--name", name]
+        for k, v in env.items():
+            cmd += ["-e", f"{k}={v}"]
+        return [*cmd, self._image, *image_cmd]
+
+    async def _count(self, name: str) -> int:
+        _rc, out = await self._run_cmd(["docker", "ps", "-q", "--filter", f"name={name}"])
+        return len([line for line in out.splitlines() if line.strip()])
+
     async def start_workers(self) -> None:
-        for i in range(self._workers):
-            env_flags: list[str] = []
-            for k, v in self._env.items():
-                env_flags += ["-e", f"{k}={v}"]
+        if self._worker_type == "sidecar":
+            if await self._count("sluice-server") == 0:
+                # the model server owns the GPU and runs its own entrypoint; it holds NO broker creds
+                server_env = {k: v for k, v in self._env.items() if not k.startswith("WORKER__BROKER")}
+                await self._run_cmd(
+                    self._docker_run("sluice-server", server_env, gpus=True, host_net=True, image_cmd=self._args)
+                )
             await self._run_cmd(
-                [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--rm",
-                    "--gpus",
-                    "all",
-                    "--name",
-                    f"sluice-worker-{i}",
-                    *env_flags,
-                    self._image,
-                    "python",
-                    "-m",
-                    "sluice_worker.run",
-                ]
+                self._docker_run(
+                    "sluice-worker",
+                    self._env,
+                    gpus=False,
+                    host_net=True,
+                    image_cmd=["python", "-m", "sluice_worker.adapter"],
+                )
+            )
+        else:  # handler: one launcher container packs N replicas (sequential start) on the GPU
+            await self._run_cmd(
+                self._docker_run(
+                    "sluice-worker",
+                    self._env,
+                    gpus=True,
+                    host_net=False,
+                    image_cmd=["python", "-m", "sluice_worker.launch", "--instances", str(self._instances)],
+                )
             )
         self._idle_since = None
 
     async def _running(self) -> int:
-        _rc, out = await self._run_cmd(["docker", "ps", "-q", "--filter", "name=sluice-worker-"])
-        return len([line for line in out.splitlines() if line.strip()])
+        # The leasing container (launcher / adapter) is what "busy" means; a warm model server doesn't count.
+        return await self._count("sluice-worker")
 
     async def _heartbeat(self, phase: str, workers: int) -> None:
         doc = {"phase": phase, "workers": workers, "ts": time.time()}
@@ -99,11 +125,11 @@ class VmAgent:
         running = await self._running()
         if running > 0:
             self._idle_since = None
-            await self._heartbeat("running", running)
+            await self._heartbeat("running", self._instances)  # the unit packs `instances` replicas
             return True
         if command == "start_workers":
             await self.start_workers()
-            await self._heartbeat("running", self._workers)
+            await self._heartbeat("running", self._instances)
             return True
         if self._idle_since is None:
             self._idle_since = now
@@ -151,7 +177,9 @@ def main() -> None:
         app=os.environ["SLUICE_APP"],
         vm_id=os.environ["VM_ID"],
         worker_image=os.environ["WORKER_IMAGE"],
-        workers=int(os.environ.get("WORKERS_PER_VM", "1")),
+        instances=int(os.environ.get("SLUICE_INSTANCES", os.environ.get("WORKERS_PER_VM", "1"))),
+        worker_type=os.environ.get("SLUICE_WORKER_TYPE", "handler"),
+        args=json.loads(os.environ.get("SLUICE_ARGS", "[]")),
         linger_s=int(os.environ.get("LINGER_SECONDS", "300")),
         env=_worker_env(dict(os.environ)),
         runner=_subprocess_runner,

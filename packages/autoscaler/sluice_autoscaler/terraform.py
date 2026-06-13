@@ -92,25 +92,45 @@ class TerraformProvider:
             )
         return ""  # local state (dev)
 
-    def _module_values(self, app: AppSpec, *, name: str, region: str, pricing: str) -> dict[str, object]:
+    def _module_values(
+        self, app: AppSpec, *, name: str, region: str, pricing: str, instances: int, worker_args, worker_type, server
+    ) -> dict[str, object]:
         vc = _vm_candidate(app)
         provider, vm = vc.provider, vc.spec
+        image = vc.overrides.image if vc.overrides and vc.overrides.image else app.image
         worker_env = {
             "WORKER__BROKER_URL": self._broker_url,
             "WORKER__BROKER_TOKEN": mint_worker_token(app=app.name, worker_id=name, key=self._signing_key),
             "WORKER__HANDLER": app.handler,
             "WORKER__APP": app.name,
             **app.env,
+            **((vc.overrides.env if vc.overrides else None) or {}),
         }
-        # Hand the agent the full worker env explicitly so non-prefixed model env (MODEL__*,
-        # HF_HUB_OFFLINE, ...) reaches worker containers — the agent forwards SLUICE_WORKER_ENV verbatim.
-        env = {**worker_env, "SLUICE_WORKER_ENV": json.dumps(worker_env)}
+        if worker_type == "sidecar" and server is not None:
+            worker_env |= {
+                "WORKER__CONCURRENCY": str(server.concurrency or instances),
+                "WORKER__SERVER_PORT": str(server.port),
+                "WORKER__SERVER_REQUEST_PATH": server.request_path,
+                "WORKER__SERVER_METHOD": server.method,
+                "WORKER__SERVER_CONTENT_TYPE": server.content_type,
+                "WORKER__SERVER_HEALTH_PATH": server.health_path,
+                "WORKER__SERVER_READY_TIMEOUT_S": str(server.ready_timeout_s),
+            }
+        # Hand the agent the full worker env explicitly (SLUICE_WORKER_ENV) so non-prefixed model env
+        # (MODEL__*, HF_HUB_OFFLINE, ...) survives; plus the archetype/packing it must render.
+        env = {
+            **worker_env,
+            "SLUICE_WORKER_ENV": json.dumps(worker_env),
+            "SLUICE_WORKER_TYPE": worker_type,
+            "SLUICE_INSTANCES": str(instances),
+            "SLUICE_ARGS": json.dumps(worker_args),
+        }
         common: dict[str, object] = {
             "name": name,
             "app": app.name,
             "spot": pricing == "spot",
-            "worker_image": app.image,
-            "workers_per_vm": vm.workers_per_vm,
+            "worker_image": image,
+            "workers_per_vm": instances,
             "linger_seconds": vm.linger_seconds,
             "env": env,
         }
@@ -131,11 +151,11 @@ class TerraformProvider:
             }
         return common
 
-    def _render(self, app: AppSpec, *, name: str, region: str, pricing: str) -> Path:
+    def _render(self, app: AppSpec, *, name: str, region: str, pricing: str, **worker_kw) -> Path:
         provider = _vm_candidate(app).provider
         workdir = self._root / app.name / region / name
         workdir.mkdir(parents=True, exist_ok=True)
-        values = self._module_values(app, name=name, region=region, pricing=pricing)
+        values = self._module_values(app, name=name, region=region, pricing=pricing, **worker_kw)
         lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{provider}'))}"]
         lines += [f"  {k} = {_hcl(v)}" for k, v in values.items()]
         lines += ["}", 'output "instance_name" { value = module.vm.instance_name }']
@@ -143,13 +163,30 @@ class TerraformProvider:
         (workdir / "backend.tf").write_text(self._backend_tf(f"sluice/apps/{app.name}/tf/{region}/{name}"))
         return workdir
 
-    async def provision(self, app: AppSpec, *, region: str, pricing: str, count: int) -> list[VmRecord]:
+    async def provision(
+        self,
+        app: AppSpec,
+        *,
+        region: str,
+        pricing: str,
+        count: int,
+        instances: int = 1,
+        args: list[str] | None = None,
+        worker_type: str = "handler",
+        server=None,
+    ) -> list[VmRecord]:
         vc = _vm_candidate(app)
         provider, vm = vc.provider, vc.spec
+        worker_kw = {
+            "instances": instances,
+            "worker_args": list(args or []),
+            "worker_type": worker_type,
+            "server": server,
+        }
         records: list[VmRecord] = []
         for _ in range(count):
             name = f"sluice-{app.name}-{uuid.uuid4().hex[:6]}"
-            workdir = self._render(app, name=name, region=region, pricing=pricing)
+            workdir = self._render(app, name=name, region=region, pricing=pricing, **worker_kw)
             for args in (
                 ("init", "-input=false"),
                 ("plan", "-out=plan.tfplan", "-input=false"),

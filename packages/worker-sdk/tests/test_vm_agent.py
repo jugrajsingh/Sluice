@@ -33,27 +33,58 @@ class FakeDocker:
         return 0, ""
 
 
-def _agent(store, docker, linger=100):
+def _agent(store, docker, linger=100, worker_type="handler", instances=3, args=None, env=None):
     return VmAgent(
         store=store,
         app="m",
         vm_id="v1",
         worker_image="img",
-        workers=2,
+        instances=instances,
+        worker_type=worker_type,
+        args=args,
         linger_s=linger,
-        env={"WORKER__BROKER_URL": "http://sluice-gateway"},
+        env=env or {"WORKER__BROKER_URL": "http://sluice-gateway"},
         runner=docker,
     )
 
 
-async def test_start_writes_running_heartbeat():
+def _runs(docker):
+    return [c for c in docker.calls if c[:2] == ["docker", "run"]]
+
+
+async def test_handler_runs_one_launcher_packing_instances():
     store, docker = FakeObjectStore(), FakeDocker()
-    agent = _agent(store, docker)
+    agent = _agent(store, docker, worker_type="handler", instances=3)
     await agent.start_workers()
     assert await agent.step(now=0.0) is True
     hb = json.loads(await store.get(heartbeat_key("m", "v1")))
-    assert hb["phase"] == "running" and hb["workers"] == 2
-    assert sum(1 for c in docker.calls if c[:2] == ["docker", "run"]) == 2
+    assert hb["phase"] == "running" and hb["workers"] == 3  # unit packs 3, reported as the unit's capacity
+    runs = _runs(docker)
+    assert len(runs) == 1  # one launcher container
+    cmd = runs[0]
+    assert "--gpus" in cmd and "sluice_worker.launch" in cmd and "--instances" in cmd and "3" in cmd
+
+
+async def test_sidecar_runs_server_plus_adapter_sharing_network():
+    store, docker = FakeObjectStore(), FakeDocker()
+    env = {
+        "WORKER__BROKER_URL": "http://g",
+        "WORKER__BROKER_TOKEN": "tok",
+        "MODEL__VARIANT": "sam3.1",
+    }  # gitleaks:allow (test fixture)
+    agent = _agent(store, docker, worker_type="sidecar", instances=3, args=["--xl"], env=env)
+    await agent.start_workers()
+    runs = _runs(docker)
+    assert len(runs) == 2
+    server = next(c for c in runs if "sluice-server" in c)
+    worker = next(c for c in runs if "sluice-worker" in c)
+    # server: GPU + host network + its own entrypoint args; broker token NOT passed to it
+    assert "--gpus" in server and "--network" in server and server[-1] == "--xl"
+    assert not any("WORKER__BROKER_TOKEN" in part for part in server)
+    assert any("MODEL__VARIANT=sam3.1" == part for part in server)
+    # adapter: host network, runs the adapter, carries the broker token
+    assert "--network" in worker and worker[-3:] == ["python", "-m", "sluice_worker.adapter"]
+    assert any("WORKER__BROKER_TOKEN=tok" == part for part in worker)
 
 
 async def test_idle_then_linger_then_exit():

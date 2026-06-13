@@ -204,9 +204,17 @@ class Controller:
                 SCALE_UP_PODS.labels(app=app.name).inc(a.count)
                 self._cooldown_until[app.name] = now + app.scaling.cooldown_s
             elif isinstance(a, ProvisionVms) and self._compute is not None:
+                c = a.candidate
                 try:
                     await self._compute.provision(
-                        app, region=a.candidate.location, pricing=a.candidate.pricing, count=a.count
+                        app,
+                        region=c.location,
+                        pricing=c.pricing,
+                        count=a.count,
+                        instances=c.instances,
+                        args=c.args,
+                        worker_type=c.worker_type,
+                        server=c.server,
                     )
                 except ProvisionFailure as e:
                     await self._mark(candidate_key(a.candidate), f"{e.kind.value}: {e}")
