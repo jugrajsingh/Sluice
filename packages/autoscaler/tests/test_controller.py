@@ -215,6 +215,48 @@ async def test_creates_pods_in_external_cluster_when_local_is_stocked(tmp_path):
     assert ctl._pods.created == []  # in-cluster manager untouched
 
 
+def _app_with_unregistered_first():
+    return AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        placement=[
+            KubernetesCandidate(provider="ghost", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "1"}])),
+            KubernetesCandidate(
+                provider="in-cluster", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "2"}])
+            ),
+        ],
+    )
+
+
+async def test_unregistered_cluster_candidate_is_skipped_for_registered_fallback(tmp_path):
+    app = _app_with_unregistered_first()
+    ctl, _reg, _ = _controller(tmp_path)  # only in-cluster registered (no 'ghost')
+    await ctl.reconcile_one(app)
+    fallback_key = candidate_key(expand_candidates(app)[1])  # the in-cluster candidate
+    assert ctl._pods.created == [(3, fallback_key)]  # skipped ghost, placed on the registered fallback
+
+
+async def test_only_unregistered_cluster_holds_with_reason(tmp_path):
+    app = AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        placement=[
+            KubernetesCandidate(provider="ghost", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "1"}]))
+        ],
+    )
+    ctl, reg, _ = _controller(tmp_path)
+    await ctl.reconcile_one(app)
+    st = await reg.get_status("m")
+    assert st.phase == "Held" and "ghost" in (st.reason or "")  # surfaced, not stuck in Scaling
+    assert ctl._pods.created == []
+
+
 async def test_stuck_pod_in_external_cluster_is_deleted_in_that_cluster(tmp_path):
     app = AppSpec(
         name="m",

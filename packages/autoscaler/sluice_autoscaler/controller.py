@@ -135,6 +135,12 @@ class Controller:
             depth = await self._q.depth(app.queue_ref)
             keys = [candidate_key(c) for c in expand_candidates(app)]
             stocked = await self._board.view(keys) if self._board else {}
+            # A candidate targeting an unregistered cluster is unavailable — treat it as stocked so
+            # the walk advances to the next candidate (and surfaces it in the Held reason) instead of
+            # picking it and silently sitting in Scaling forever.
+            for c in expand_candidates(app):
+                if c.type == "kubernetes" and c.cluster not in self._clusters:
+                    stocked.setdefault(candidate_key(c), f"cluster '{c.cluster}' not registered")
             now = time.time()
             result = plan(
                 app,
