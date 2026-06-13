@@ -17,8 +17,9 @@
    Provider errors are classified — `ZONE_RESOURCE_POOL_EXHAUSTED` / `InsufficientInstanceCapacity`
    mark the region and the next one is probed.
 4. The VM's startup script launches the **agent** (`sluice_worker.vm_agent`, a container with the
-   docker socket), which runs `workersPerVm` worker containers, heartbeats to
-   `sluice/apps/{app}/vms/{id}/heartbeat.json`, and polls `desired.json` for commands.
+   docker socket), which runs the unit for the app's `worker` archetype — a launcher packing
+   `worker.instances` `worker.run` processes (handler), or the model server + adapter (sidecar) —
+   heartbeats to `sluice/apps/{app}/vms/{id}/heartbeat.json`, and polls `desired.json` for commands.
 5. **Scale-to-zero is emergent**: workers exit on empty queue → the agent lingers
    `lingerSeconds` (warm restarts happen here if the queue refills — the controller writes
    `desired.json: start_workers`) → the agent exits → the host script powers the VM off →

@@ -6,7 +6,11 @@ spec:
   handler: handler:MyHandler           # WORKER__HANDLER inside your image
   queue: { ref: your-model }
   resources: { gpu: 1, gpuType: nvidia-l4, cpu: 2, memoryGb: 8 }
-  scaling: { messagesPerWorker: 10, maxWorkers: 0, scaleUpCount: 3, scheduleGraceSeconds: 180 }
+  worker:
+    type: handler          # handler (in-process BaseHandler) | sidecar (HTTP model server + adapter)
+    instances: 2           # model replicas packed onto each GPU (no MPS); per-candidate overridable
+  # messagesPerWorker is per packed unit (≈ per-replica throughput × instances)
+  scaling: { messagesPerWorker: 20, maxWorkers: 0, scaleUpCount: 3, scheduleGraceSeconds: 180 }
   # placement is an ORDERED list of candidates; the controller tries each in turn and marks
   # a candidate stocked-out (shared across apps) before advancing to the next.
   placement:
@@ -29,4 +33,3 @@ spec:
         machineType: g2-standard-8
         acceleratorType: nvidia-l4
         regions: [us-central1, europe-west3]
-        workersPerVm: 2

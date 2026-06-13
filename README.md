@@ -15,9 +15,9 @@ model** — the SDK, charts, autoscaler, and gateway do the rest.
 - **Never kill a busy worker** — workers own their lifecycle and self-exit; the control
   plane only scales **up** and **reaps exited** pods. It structurally cannot kill a
   running worker.
-- **Scheduler-driven GPU packing** — workers carry a normal pod spec
-  (`nvidia.com/gpu` + MPS node pool); the scheduler packs them, requesting a new GPU
-  only when the current one is full. No custom placement logic.
+- **Scheduler-placed GPU pods** — workers carry a normal pod spec (`nvidia.com/gpu` + node
+  selectors + GPU tolerations); the kube-scheduler places each on the matching pool. Which
+  pool/cluster/VM to try, and in what order, is the autoscaler's placement playbook (ADR-006).
 - **State-aware scaling** — on a GPU stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) the
   autoscaler **HOLDs** instead of piling up unschedulable pods, and surfaces the reason.
 - **Ordered, multi-cluster placement** — each app lists `placement` candidates in priority
