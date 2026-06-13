@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sluice — queue-driven, scale-from-zero GPU inference for any Kubernetes</title>
+<meta name="description" content="Sluice is an open-source, vendor-neutral async inference platform: bursts deepen a queue instead of failing, workers self-terminate, GPUs scale from zero, and placement falls back from spot to on-demand to cross-region VMs.">
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2c;
+    --line: #1e2a44;
+    --text: #dbe4f3;
+    --muted: #8b9ab5;
+    --accent: #4cc3ff;
+    --accent-dim: #1b5e85;
+    --code-bg: #0d1626;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header.site {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; color: var(--text); }
+  .brand svg { display: block; }
+  nav.site a { color: var(--muted); margin-left: 22px; font-size: .95rem; }
+  nav.site a:hover { color: var(--text); text-decoration: none; }
+
+  .hero { padding: 72px 0 56px; text-align: left; }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3.1rem);
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    max-width: 21ch;
+  }
+  .hero h1 em { color: var(--accent); font-style: normal; }
+  .hero p.lede { margin: 22px 0 0; max-width: 62ch; color: var(--muted); font-size: 1.12rem; }
+  .cta { margin-top: 34px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 8px;
+    font-weight: 600; font-size: .95rem; border: 1px solid var(--line);
+  }
+  .btn.primary { background: var(--accent); color: #04121f; border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.1); text-decoration: none; }
+  .btn.ghost { color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent-dim); text-decoration: none; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 1.55rem; letter-spacing: -.01em; margin-bottom: 8px; }
+  p.sub { color: var(--muted); margin-bottom: 32px; max-width: 70ch; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 22px;
+  }
+  .card h3 { font-size: 1.02rem; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: .94rem; }
+
+  ol.steps { counter-reset: step; list-style: none; display: grid; gap: 14px; }
+  ol.steps li {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px 20px 18px 64px; position: relative; color: var(--muted);
+  }
+  ol.steps li strong { color: var(--text); display: block; margin-bottom: 2px; }
+  ol.steps li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 18px; top: 18px;
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--accent-dim); color: var(--text); font-weight: 700; font-size: .9rem;
+  }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 20px; overflow-x: auto; font-size: .86rem; line-height: 1.55;
+  }
+  code { font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, monospace; }
+  pre .c { color: #5c6f93; }   /* comment */
+  pre .k { color: #4cc3ff; }   /* key */
+  pre .s { color: #9ece6a; }   /* string */
+  pre .p { color: #c0caf5; }   /* punctuation/plain */
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 800px) { .twocol { grid-template-columns: 1fr; } }
+  .filename {
+    font-size: .78rem; color: var(--muted); margin-bottom: 6px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 36px 0 48px;
+    color: var(--muted); font-size: .9rem;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="site">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+        <rect x="2"  y="4"  width="22" height="3.5" rx="1.75" fill="#4cc3ff"/>
+        <rect x="6"  y="11" width="14" height="3.5" rx="1.75" fill="#4cc3ff" opacity=".7"/>
+        <rect x="10" y="18" width="6"  height="3.5" rx="1.75" fill="#4cc3ff" opacity=".45"/>
+      </svg>
+      Sluice
+    </div>
+    <nav class="site">
+      <a href="#how">How it works</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="https://github.com/jugrajsingh/Sluice">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Queue-driven, <em>scale-from-zero</em> GPU inference for any Kubernetes.</h1>
+    <p class="lede">
+      Sluice is the open-source, vendor-neutral take on managed async inference
+      (the SageMaker-Async / Vertex-Batch pattern) — on your own cluster. Traffic
+      bursts deepen a queue instead of returning 503s, workers own their lifecycle
+      and are never killed mid-job, and when your cluster runs out of GPUs, Sluice
+      bursts to spot VMs in another region.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/jugrajsingh/Sluice">View on GitHub</a>
+      <a class="btn ghost" href="#quickstart">Quickstart</a>
+    </div>
+  </div>
+
+  <section>
+    <h2>Why Sluice</h2>
+    <p class="sub">Bring only your model — the worker SDK, gateway, autoscaler, and charts do the rest.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Burst-proof intake</h3>
+        <p>A spike never fails a request. The gateway stores the body, enqueues an ID,
+           and answers immediately with a ticket and a wait-time estimate.</p>
+      </div>
+      <div class="card">
+        <h3>Never kills a busy worker</h3>
+        <p>Workers self-terminate when the queue is empty. The control plane only
+           scales up and reaps the exited — no mid-inference SIGKILL, ever.</p>
+      </div>
+      <div class="card">
+        <h3>Scale to zero, emergently</h3>
+        <p>Zero is not a controller decision — it's what's left when workers finish
+           and exit. Idle apps cost nothing. No CRDs, no Deployment churn.</p>
+      </div>
+      <div class="card">
+        <h3>Stockout-aware placement</h3>
+        <p>Spot first, on-demand second. Stuck pods mark a zone/GPU/pricing candidate
+           as stocked out (shared across apps), and the playbook walks zones — then
+           provisions VMs in other regions via Terraform when Kubernetes is exhausted.</p>
+      </div>
+      <div class="card">
+        <h3>Bring your own backends</h3>
+        <p>Redis or SQS queues; S3, GCS, or MinIO object stores. App specs live in
+           your bucket (kops-style), so the control plane is stateless and restartable.</p>
+      </div>
+      <div class="card">
+        <h3>One tiny contract</h3>
+        <p>Request ID in the queue, body and result in the bucket. Any worker that can
+           read both can serve — a pod in your cluster or a VM on another continent.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">Four moving parts: a gateway, a queue, a bucket, and a controller that only ever scales up.</p>
+    <ol class="steps">
+      <li><strong>Define an app, apply it</strong>
+        One YAML: image, handler, resources, scaling, placement. <code>sluice apply</code>
+        stores it in your object store — that bucket is the source of truth.</li>
+      <li><strong>Clients post work</strong>
+        <code>POST /v1/{app}/infer</code> writes the body to the bucket, enqueues the
+        request ID, and returns a ticket with an ETA. Batches work the same way.</li>
+      <li><strong>The controller scales up</strong>
+        Queue depth ÷ messages-per-worker says how many workers should exist. The
+        placement playbook picks the cheapest viable candidate — spot zones first,
+        then on-demand, then cross-region VMs.</li>
+      <li><strong>Workers drain and disappear</strong>
+        Each worker pulls IDs, fetches bodies, runs your handler, writes results, and
+        exits when the queue is dry. The controller reaps the husks. Back to zero.</li>
+    </ol>
+  </section>
+
+  <section id="quickstart">
+    <h2>Quickstart</h2>
+    <p class="sub">An app is one YAML file. This one runs on cluster GPUs when it can, and bursts to spot VMs in another region when it can't.</p>
+    <div class="twocol">
+      <div>
+        <div class="filename">app.yaml</div>
+<pre><code><span class="k">name</span><span class="p">:</span> <span class="s">segmentation</span>
+<span class="k">image</span><span class="p">:</span> <span class="s">ghcr.io/jugrajsingh/sluice-example-segmentation:latest</span>
+<span class="k">handler</span><span class="p">:</span> <span class="s">handler:SegmentationHandler</span>
+<span class="k">queue</span><span class="p">:</span>
+  <span class="k">ref</span><span class="p">:</span> <span class="s">sluice-segmentation</span>
+<span class="k">storage</span><span class="p">:</span>
+  <span class="k">prefix</span><span class="p">:</span> <span class="s">apps/segmentation</span>
+<span class="k">resources</span><span class="p">:</span>
+  <span class="k">gpu</span><span class="p">:</span> <span class="s">1</span>
+  <span class="k">gpuType</span><span class="p">:</span> <span class="s">nvidia-l4</span>
+  <span class="k">cpu</span><span class="p">:</span> <span class="s">4</span>
+  <span class="k">memoryGb</span><span class="p">:</span> <span class="s">16</span>
+<span class="k">scaling</span><span class="p">:</span>
+  <span class="k">messagesPerWorker</span><span class="p">:</span> <span class="s">8</span>
+  <span class="k">maxWorkers</span><span class="p">:</span> <span class="s">0</span>   <span class="c"># unbounded</span>
+<span class="k">placement</span><span class="p">:</span>
+  <span class="k">mode</span><span class="p">:</span> <span class="s">both</span>        <span class="c"># kubernetes | vm | both</span>
+  <span class="k">pricing</span><span class="p">:</span> <span class="s">[spot, on-demand]</span>
+  <span class="k">vm</span><span class="p">:</span>
+    <span class="k">provider</span><span class="p">:</span> <span class="s">gce</span>
+    <span class="k">machineType</span><span class="p">:</span> <span class="s">g2-standard-8</span>
+    <span class="k">regions</span><span class="p">:</span> <span class="s">[us-central1, europe-west3]</span>
+</code></pre>
+      </div>
+      <div>
+        <div class="filename">shell</div>
+<pre><code><span class="c"># register the app (spec lands in your bucket)</span>
+<span class="p">sluice apply -f app.yaml</span>
+
+<span class="c"># submit work — returns a ticket instantly</span>
+<span class="p">curl -s $GATEWAY/v1/segmentation/infer \
+     -d @body.json</span>
+<span class="c"># {"ticket":"…","etaSeconds":42}</span>
+
+<span class="c"># poll for the result</span>
+<span class="p">curl -s $GATEWAY/v1/segmentation/status/$TICKET</span>
+
+<span class="c"># idle again? workers have already exited.</span>
+<span class="p">sluice status segmentation</span>
+</code></pre>
+        <p style="color:var(--muted); font-size:.9rem; margin-top:14px">
+          Install with Helm: gateway, console, and autoscaler ship as one chart;
+          workers are bare pods synthesized from the spec — nothing else to deploy.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site">
+    <span>Apache-2.0 · © 2026 Jugraj Singh</span>
+    <span><a href="https://github.com/jugrajsingh/Sluice">github.com/jugrajsingh/Sluice</a></span>
+  </footer>
+
+</div>
+</body>
+</html>

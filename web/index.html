@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sluice Console</title></head>
+<body>
+<h1>Sluice</h1><div id="apps"></div>
+<script>
+async function refresh() {
+  const apps = await (await fetch('/v1/apps')).json();
+  document.getElementById('apps').innerHTML = apps.map(a => `
+    <div>
+      <b>${a.name}</b> [${a.scale_status}] —
+      queue ${a.queue.visible} visible / ${a.queue.in_flight} in-flight —
+      workers ${JSON.stringify(a.workers)}
+      <button onclick="act('${a.name}','pause')">Pause</button>
+      <button onclick="act('${a.name}','resume')">Resume</button>
+      <button onclick="act('${a.name}','drain')">Drain</button>
+    </div>`).join('');
+}
+async function act(name,verb){ await fetch(`/v1/apps/${name}/${verb}`,{method:'POST'}); refresh(); }
+setInterval(refresh, 3000); refresh();
+</script>
+</body></html>
