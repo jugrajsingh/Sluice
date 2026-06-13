@@ -3,6 +3,8 @@
 docs/superpowers/
 # private reference example wrapping a proprietary model server (BYO)
 examples/samserve/
+# claude-mem session-memory dump (auto-generated; not repo content)
+AGENTS.md
 .venv/
 __pycache__/
 *.pyc
