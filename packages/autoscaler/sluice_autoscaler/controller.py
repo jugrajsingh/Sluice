@@ -33,6 +33,8 @@ from .playbook import (
 from .stockout import StockoutBoard
 from .vm_commands import VmCommander
 
+IN_CLUSTER = "in-cluster"
+
 
 class PodManager:
     """Bare-pod lifecycle on the k8s substrate."""
@@ -64,6 +66,7 @@ class Controller:
         queue: Queue,
         inspector: ClusterInspector,
         pods: PodManager,
+        clusters: dict[str, tuple[PodManager, ClusterInspector]] | None = None,
         compute: ComputeProvider | None = None,
         commander: VmCommander | None = None,
         cache: Cache | None = None,
@@ -76,6 +79,13 @@ class Controller:
         self._q = queue
         self._inspect = inspector
         self._pods = pods
+        # Per-cluster (pod manager, inspector). `pods`/`inspector` are the in-cluster handle;
+        # `clusters` adds external clusters (kubeconfig-backed), keyed by name. A k8s placement
+        # candidate's `cluster` selects the handle; vm candidates use the ComputeProvider instead.
+        self._clusters: dict[str, tuple[PodManager, ClusterInspector]] = {
+            IN_CLUSTER: (pods, inspector),
+            **(clusters or {}),
+        }
         self._compute = compute
         self._commander = commander
         self._store = store
@@ -99,9 +109,27 @@ class Controller:
             views.append(VmView(record=rec, phase=phase, workers_running=workers))
         return views
 
+    def _target_clusters(self, app: AppSpec) -> list[str]:
+        """Registered clusters this app's k8s placement targets, in placement order (deduped)."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in expand_candidates(app):
+            if c.type == "kubernetes" and c.cluster not in seen:
+                seen.add(c.cluster)
+                if c.cluster in self._clusters:
+                    out.append(c.cluster)
+        return out
+
     async def reconcile_one(self, app: AppSpec) -> None:
         with RECONCILE_SECONDS.time():
-            pods = await self._inspect.workers(app)
+            pods: list = []
+            pod_cluster: dict[str, str] = {}
+            for name in self._target_clusters(app):
+                _pm, inspector = self._clusters[name]
+                cluster_pods = await inspector.workers(app)
+                for w in cluster_pods:
+                    pod_cluster[w.pod] = name
+                pods.extend(cluster_pods)
             vms = await self._observe_vms(app)
             depth = await self._q.depth(app.queue_ref)
             keys = [candidate_key(c) for c in expand_candidates(app)]
@@ -115,7 +143,7 @@ class Controller:
                 cooldown_until=self._cooldown_until.get(app.name, 0.0),
                 boot_deadline_s=self._boot_deadline,
             )
-            await self._execute(app, result, now)
+            await self._execute(app, result, now, pod_cluster)
             for state, n in _summarize(pods).items():
                 WORKERS.labels(app=app.name, state=state).set(n)
             vm_states: dict[str, int] = {}
@@ -141,16 +169,24 @@ class Controller:
         parts = key.split("/")
         STOCKOUTS.labels(substrate=parts[0], pricing=parts[-1]).inc()
 
-    async def _execute(self, app: AppSpec, result: PlacementPlan, now: float) -> None:
-        reap = [a.pod for a in result.actions if isinstance(a, ReapPod)]
-        stuck = [a.pod for a in result.actions if isinstance(a, RemoveStuckPod)]
-        if reap or stuck:
-            await self._pods.delete_pods(app, reap + stuck)
+    async def _execute(self, app: AppSpec, result: PlacementPlan, now: float, pod_cluster: dict[str, str]) -> None:
+        # Route pod deletes to the cluster each pod lives in (default: in-cluster).
+        to_delete = [a.pod for a in result.actions if isinstance(a, ReapPod | RemoveStuckPod)]
+        by_cluster: dict[str, list[str]] = {}
+        for name in to_delete:
+            by_cluster.setdefault(pod_cluster.get(name, IN_CLUSTER), []).append(name)
+        for cname, names in by_cluster.items():
+            handle = self._clusters.get(cname)
+            if handle is not None:
+                await handle[0].delete_pods(app, names)
         for a in result.actions:
             if isinstance(a, MarkStockout):
                 await self._mark(a.candidate_key, a.reason)
             elif isinstance(a, CreatePods):
-                await self._pods.create_pods(
+                handle = self._clusters.get(a.candidate.cluster)
+                if handle is None:
+                    continue  # cluster not registered in AUTOSCALER__CLUSTERS — can't place here
+                await handle[0].create_pods(
                     app,
                     a.count,
                     selector=a.candidate.selector,

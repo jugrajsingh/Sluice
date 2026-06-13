@@ -102,7 +102,7 @@ class FakeCompute:
         self.destroyed += vm_ids
 
 
-def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=None):
+def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=None, clusters=None):
     store = FakeObjectStore()
     reg = ObjectStoreAppRegistry(store=store)
     ctl = Controller(
@@ -110,6 +110,7 @@ def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=No
         queue=FakeQueue(visible),
         inspector=inspector or FakeInspector(),
         pods=FakePods(),
+        clusters=clusters,
         compute=compute,
         commander=VmCommander(store=store),
         cache=cache or ObjectStoreCache(store=store),
@@ -183,6 +184,61 @@ async def test_idle_vm_gets_warm_restart_command(tmp_path):
     await ctl.reconcile_one(_app())
     cmd = json.loads(await store.get(desired_key("m", "v1")))
     assert cmd["action"] == "start_workers"
+
+
+def _multi_cluster_app():
+    return AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        placement=[
+            KubernetesCandidate(
+                provider="in-cluster", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "1"}])
+            ),
+            KubernetesCandidate(
+                provider="gke-east", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "2"}])
+            ),
+        ],
+    )
+
+
+async def test_creates_pods_in_external_cluster_when_local_is_stocked(tmp_path):
+    app = _multi_cluster_app()
+    local_key = candidate_key(expand_candidates(app)[0])
+    east_key = candidate_key(expand_candidates(app)[1])
+    east_pods = FakePods()
+    cache = ObjectStoreCache(store=FakeObjectStore())
+    await cache.set(f"stockout/{local_key}", b"out", ttl_s=600)  # local cluster exhausted
+    ctl, _reg, _ = _controller(tmp_path, cache=cache, clusters={"gke-east": (east_pods, FakeInspector())})
+    await ctl.reconcile_one(app)
+    assert east_pods.created == [(3, east_key)]  # placed in the external cluster
+    assert ctl._pods.created == []  # in-cluster manager untouched
+
+
+async def test_stuck_pod_in_external_cluster_is_deleted_in_that_cluster(tmp_path):
+    app = AppSpec(
+        name="m",
+        image="i",
+        handler="h:H",
+        resources=ResourcesSpec(gpu=1, gpu_type="l4"),
+        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        placement=[
+            KubernetesCandidate(provider="gke-east", spec=K8sPlacementSpec(pricing="spot", node_selectors=[{"s": "2"}]))
+        ],
+    )
+    east_key = candidate_key(expand_candidates(app)[0])
+    east_pods = FakePods()
+    stuck = WorkerStatus(
+        pod="ep", state=WorkerState.unschedulable, age_s=999, reason="ZONE_RESOURCE_POOL_EXHAUSTED", candidate=east_key
+    )
+    cache = ObjectStoreCache(store=FakeObjectStore())
+    ctl, _reg, _ = _controller(tmp_path, cache=cache, clusters={"gke-east": (east_pods, FakeInspector([stuck]))})
+    await ctl.reconcile_one(app)
+    assert "ep" in east_pods.deleted  # reaped in the external cluster, not locally
+    assert "ep" not in ctl._pods.deleted
+    assert await cache.get(f"stockout/{east_key}") is not None
 
 
 async def test_preempted_vm_destroyed(tmp_path):

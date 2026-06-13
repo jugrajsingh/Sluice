@@ -10,6 +10,7 @@ failures back off exponentially (capped at 300 s). Exposes `/healthz` + `/metric
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 from datetime import UTC
@@ -127,6 +128,24 @@ async def run() -> None:
     for c in (pods, inspector):
         await c.open()
 
+    # External clusters: AUTOSCALER__CLUSTERS=[{"name","kubeconfig_path","namespace"?}, ...].
+    # Each gets its own kubeconfig-backed pod manager + inspector; apps target them by name in
+    # a placement candidate's `provider`. Kubeconfigs are mounted Secrets (deployment-level).
+    extra_clusters: dict[str, tuple[KubePodManager, KubeClusterInspector]] = {}
+    extra_handles: list = []
+    for entry in json.loads(os.getenv("AUTOSCALER__CLUSTERS", "") or "[]"):
+        ckw = {
+            "in_cluster": False,
+            "config_path": entry["kubeconfig_path"],
+            "namespace": entry.get("namespace", workers_ns),
+        }
+        cpods = KubePodManager(broker_url=broker_url, signing_key=signing_key, **ckw)
+        cinsp = KubeClusterInspector(**ckw)
+        extra_clusters[entry["name"]] = (cpods, cinsp)
+        extra_handles += [cpods, cinsp]
+    for c in extra_handles:
+        await c.open()
+
     compute = None
     if settings.placement.tf_state_backend:
         from .terraform import TerraformProvider
@@ -148,6 +167,7 @@ async def run() -> None:
         queue=build_queue(settings),
         inspector=inspector,
         pods=pods,
+        clusters=extra_clusters,
         compute=compute,
         commander=VmCommander(store=store),
         cache=cache,
@@ -180,7 +200,7 @@ async def run() -> None:
                 await asyncio.sleep(backoff)
     finally:
         await http_runner.cleanup()
-        for c in (pods, inspector):
+        for c in (pods, inspector, *extra_handles):
             await c.close()
 
 
