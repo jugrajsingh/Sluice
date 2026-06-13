@@ -18,7 +18,15 @@ class BatchIn(BaseModel):
 
 
 def build_app(
-    *, queue: Queue, objects: InferenceObjects, t_sync_s: int = 3, throughput_per_s: float = 2.0, min_retry_s: int = 5
+    *,
+    queue: Queue,
+    objects: InferenceObjects,
+    t_sync_s: int = 3,
+    throughput_per_s: float = 2.0,
+    min_retry_s: int = 5,
+    signing_key: str | None = None,
+    lease_visibility_s: int = 120,
+    url_ttl_s: int = 900,
 ) -> FastAPI:
     app = FastAPI(title="sluice-gateway")
 
@@ -99,5 +107,18 @@ def build_app(
     @app.get("/metrics")
     async def metrics() -> Response:
         return Response(content=render(), media_type="text/plain")
+
+    if signing_key:
+        from .broker import build_broker_router
+
+        app.include_router(
+            build_broker_router(
+                queue=queue,
+                objects=objects,
+                signing_key=signing_key,
+                lease_visibility_s=lease_visibility_s,
+                url_ttl_s=url_ttl_s,
+            )
+        )
 
     return app
