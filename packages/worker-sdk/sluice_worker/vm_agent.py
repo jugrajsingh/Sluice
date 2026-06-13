@@ -121,6 +121,19 @@ class VmAgent:
             await asyncio.sleep(self._poll)
 
 
+def _worker_env(environ: dict[str, str]) -> dict[str, str]:
+    """Env forwarded verbatim to worker containers.
+
+    Prefer the explicit `SLUICE_WORKER_ENV` (JSON) the autoscaler sets, so model env that has no
+    Sluice prefix — `MODEL__*`, `SERVER__*`, `HF_HUB_OFFLINE`, `LD_LIBRARY_PATH` — survives. Fall
+    back to the legacy Sluice-prefix filter when it's absent (so old VMs keep working).
+    """
+    explicit = environ.get("SLUICE_WORKER_ENV")
+    if explicit:
+        return json.loads(explicit)
+    return {k: v for k, v in environ.items() if k.startswith(("QUEUE__", "OBJECT_STORE__", "WORKER__"))}
+
+
 async def _subprocess_runner(args: list[str]) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     out, _ = await proc.communicate()
@@ -133,7 +146,6 @@ def main() -> None:
     from sluice_core.config import Settings
     from sluice_drivers.factory import build_object_store
 
-    env_passthrough = {k: v for k, v in os.environ.items() if k.startswith(("QUEUE__", "OBJECT_STORE__", "WORKER__"))}
     agent = VmAgent(
         store=build_object_store(Settings()),
         app=os.environ["SLUICE_APP"],
@@ -141,7 +153,7 @@ def main() -> None:
         worker_image=os.environ["WORKER_IMAGE"],
         workers=int(os.environ.get("WORKERS_PER_VM", "1")),
         linger_s=int(os.environ.get("LINGER_SECONDS", "300")),
-        env=env_passthrough,
+        env=_worker_env(dict(os.environ)),
         runner=_subprocess_runner,
     )
     asyncio.run(agent.run())

@@ -87,6 +87,7 @@ async def test_provision_renders_plans_applies(fake_terraform, tmp_path):
     workdirs = list((tmp_path / "work").rglob("main.tf"))
     text = workdirs[0].read_text()
     assert '"g2-standard-8"' in text and "sluice-vm-gce" in text and "spot = true" in text
+    assert "SLUICE_WORKER_ENV" in text  # full worker env handed to the VM agent verbatim
     assert 'backend "s3"' in (workdirs[0].parent / "backend.tf").read_text()
 
 

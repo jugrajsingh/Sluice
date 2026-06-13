@@ -14,7 +14,7 @@ import hashlib
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from sluice_core.models import AppSpec, Toleration
+from sluice_core.models import AppSpec, ServerSpec, Toleration
 
 
 class Candidate(BaseModel):
@@ -26,6 +26,26 @@ class Candidate(BaseModel):
     selector: dict[str, str] = Field(default_factory=dict)  # k8s node selector for this attempt
     tolerations: list[Toleration] = Field(default_factory=list)  # k8s only
     schedule_grace_s: int = 180  # k8s Pending grace before this candidate is stocked out
+    # Resolved per-candidate worker config (app-level worker/image/env/args merged with overrides).
+    image: str = ""
+    env: dict[str, str] = Field(default_factory=dict)
+    args: list[str] = Field(default_factory=list)
+    instances: int = 1
+    worker_type: Literal["handler", "sidecar"] = "handler"
+    server: ServerSpec | None = None
+
+
+def _resolve(app: AppSpec, cand) -> dict:
+    """Merge app-level worker/image/env/args with a placement candidate's overrides (override wins)."""
+    ov = cand.overrides
+    return {
+        "image": (ov.image if ov and ov.image else app.image),
+        "env": {**app.env, **((ov.env if ov else None) or {})},
+        "args": list(ov.args if ov and ov.args is not None else app.worker.args),
+        "instances": (ov.instances if ov and ov.instances else app.worker.instances),
+        "worker_type": app.worker.type,
+        "server": app.worker.server,
+    }
 
 
 def _selector_hash(selector: dict[str, str]) -> str:
@@ -43,6 +63,7 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
     out: list[Candidate] = []
     gpu = app.resources.gpu_type
     for cand in app.placement:
+        resolved = _resolve(app, cand)
         if cand.type == "kubernetes":
             spec = cand.spec
             for selector in spec.node_selectors or [{}]:
@@ -55,6 +76,7 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
                         selector=dict(selector),
                         tolerations=list(spec.tolerations),
                         schedule_grace_s=spec.schedule_grace_s,
+                        **resolved,
                     )
                 )
         else:  # vm
@@ -66,6 +88,7 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
                         cluster=cand.provider,
                         location=region,
                         gpu_type=gpu,
+                        **resolved,
                     )
                 )
     return out

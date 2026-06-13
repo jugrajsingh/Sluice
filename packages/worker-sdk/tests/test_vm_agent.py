@@ -2,7 +2,20 @@ import json
 
 from sluice_core.testing.fakes import FakeObjectStore
 from sluice_core.vm_paths import desired_key, heartbeat_key
-from sluice_worker.vm_agent import VmAgent
+from sluice_worker.vm_agent import VmAgent, _worker_env
+
+
+def test_worker_env_prefers_explicit_json():
+    # the autoscaler hands the full worker env as SLUICE_WORKER_ENV — non-prefixed keys survive
+    env = _worker_env(
+        {"SLUICE_WORKER_ENV": json.dumps({"MODEL__VARIANT": "sam3.1", "HF_HUB_OFFLINE": "1"}), "PATH": "/usr/bin"}
+    )
+    assert env == {"MODEL__VARIANT": "sam3.1", "HF_HUB_OFFLINE": "1"}  # PATH not leaked
+
+
+def test_worker_env_legacy_prefix_fallback():
+    env = _worker_env({"WORKER__APP": "m", "MODEL__X": "y", "PATH": "/x"})
+    assert env == {"WORKER__APP": "m"}  # no SLUICE_WORKER_ENV -> only Sluice prefixes
 
 
 class FakeDocker:

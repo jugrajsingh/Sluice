@@ -95,13 +95,16 @@ class TerraformProvider:
     def _module_values(self, app: AppSpec, *, name: str, region: str, pricing: str) -> dict[str, object]:
         vc = _vm_candidate(app)
         provider, vm = vc.provider, vc.spec
-        env = {
+        worker_env = {
             "WORKER__BROKER_URL": self._broker_url,
             "WORKER__BROKER_TOKEN": mint_worker_token(app=app.name, worker_id=name, key=self._signing_key),
             "WORKER__HANDLER": app.handler,
             "WORKER__APP": app.name,
             **app.env,
         }
+        # Hand the agent the full worker env explicitly so non-prefixed model env (MODEL__*,
+        # HF_HUB_OFFLINE, ...) reaches worker containers — the agent forwards SLUICE_WORKER_ENV verbatim.
+        env = {**worker_env, "SLUICE_WORKER_ENV": json.dumps(worker_env)}
         common: dict[str, object] = {
             "name": name,
             "app": app.name,

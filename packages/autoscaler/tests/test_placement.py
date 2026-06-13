@@ -1,12 +1,15 @@
 from sluice_autoscaler.placement import _selector_hash, candidate_key, expand_candidates
 from sluice_core.models import (
     AppSpec,
+    CandidateOverrides,
     K8sPlacementSpec,
     KubernetesCandidate,
     ResourcesSpec,
+    ServerSpec,
     Toleration,
     VmCandidate,
     VmPlacementSpec,
+    WorkerSpec,
 )
 
 
@@ -72,3 +75,32 @@ def test_candidate_key_includes_cluster_selector_gpu_pricing():
 def test_empty_node_selectors_falls_back_to_anywhere():
     cs = expand_candidates(_app([KubernetesCandidate(spec=K8sPlacementSpec(node_selectors=[]))]))
     assert len(cs) == 1 and cs[0].selector == {} and _selector_hash(cs[0].selector) == "none"
+
+
+def test_overrides_resolved_onto_candidate():
+    app = AppSpec(
+        name="m",
+        image="base:1",
+        handler="h:H",
+        env={"HF_HUB_OFFLINE": "1"},
+        worker=WorkerSpec(
+            type="sidecar", instances=3, args=["--flag"], server=ServerSpec(port=8080, request_path="/v1/segment")
+        ),
+        resources=ResourcesSpec(gpu=1, gpu_type="nvidia-l4"),
+        placement=[
+            KubernetesCandidate(provider="in-cluster", spec=K8sPlacementSpec(node_selectors=[{"gpu": "l4"}])),
+            VmCandidate(
+                provider="gce",
+                spec=VmPlacementSpec(machine_type="g2", regions=["r1"]),
+                overrides=CandidateOverrides(instances=6, image="big:1", env={"SERVER__WORKERS": "6"}, args=["--xl"]),
+            ),
+        ],
+    )
+    cs = expand_candidates(app)
+    k = cs[0]  # no overrides -> app-level worker config
+    assert k.image == "base:1" and k.instances == 3 and k.worker_type == "sidecar"
+    assert k.env["HF_HUB_OFFLINE"] == "1" and k.args == ["--flag"]
+    assert k.server is not None and k.server.request_path == "/v1/segment"
+    v = cs[1]  # per-candidate overrides win; app env still merged in
+    assert v.image == "big:1" and v.instances == 6 and v.args == ["--xl"]
+    assert v.env["HF_HUB_OFFLINE"] == "1" and v.env["SERVER__WORKERS"] == "6"
