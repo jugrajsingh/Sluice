@@ -52,6 +52,11 @@ spec:
             {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
             - { name: GOOGLE_APPLICATION_CREDENTIALS, value: /var/secrets/gcp/credentials.json }
             {{- end }}
+            {{- if .Values.broker.signingKeySecret }}
+            - { name: AUTOSCALER__BROKER_URL, value: "{{ .Values.broker.url }}" }
+            - name: AUTOSCALER__SIGNING_KEY
+              valueFrom: { secretKeyRef: { name: "{{ .Values.broker.signingKeySecret }}", key: signing-key } }
+            {{- end }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           {{- if or .Values.backendSecret .Values.autoscaler.cloud.awsCredentialsSecret }}

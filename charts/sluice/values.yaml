@@ -8,6 +8,9 @@ object_store:
   backend: s3               # s3 | gcs | minio | local
   options: {}               # passed as OBJECT_STORE__OPTIONS JSON (e.g. bucket, endpoint_url)
 backendSecret: ""           # optional Secret with backend credentials (AWS_*, ...) for all components
+broker:
+  signingKeySecret: ""       # Secret with key 'signing-key' (HS256). Gateway verifies, autoscaler mints worker JWTs.
+  url: http://sluice-gateway # in-cluster broker URL the autoscaler stamps into worker pods
 redis:
   enabled: true             # bundled dev Redis; disable to use managed (see Chart.yaml)
 gateway: { replicas: 2, tSyncSeconds: 3 }

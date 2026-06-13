@@ -16,6 +16,10 @@ spec:
           env:
 {{ include "sluice.backendEnv" . | indent 12 }}
             - { name: GATEWAY__T_SYNC_SECONDS, value: "{{ .Values.gateway.tSyncSeconds }}" }
+            {{- if .Values.broker.signingKeySecret }}
+            - name: GATEWAY__SIGNING_KEY
+              valueFrom: { secretKeyRef: { name: "{{ .Values.broker.signingKeySecret }}", key: signing-key } }
+            {{- end }}
 {{ include "sluice.backendSecretEnvFrom" . }}
           ports: [ { containerPort: 8080 } ]
           livenessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
