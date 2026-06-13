@@ -12,7 +12,7 @@ from sluice_core.interfaces import (
     ObjectStore,
     Queue,
 )
-from sluice_core.models import AppSpec, AppStatus
+from sluice_core.models import AppSpec, AppStatus, Toleration
 from sluice_core.vm_paths import heartbeat_key
 
 from .metrics import HOLDS, RECONCILE_SECONDS, SCALE_UP_PODS, STOCKOUTS, VMS, WORKERS
@@ -37,7 +37,15 @@ from .vm_commands import VmCommander
 class PodManager:
     """Bare-pod lifecycle on the k8s substrate."""
 
-    async def create_pods(self, app: AppSpec, n: int, *, selector: dict[str, str], candidate_key: str = "") -> None: ...
+    async def create_pods(
+        self,
+        app: AppSpec,
+        n: int,
+        *,
+        selector: dict[str, str],
+        candidate_key: str = "",
+        tolerations: list[Toleration] | None = None,
+    ) -> None: ...
     async def delete_pods(self, app: AppSpec, names: list[str]) -> None: ...
 
 
@@ -143,7 +151,11 @@ class Controller:
                 await self._mark(a.candidate_key, a.reason)
             elif isinstance(a, CreatePods):
                 await self._pods.create_pods(
-                    app, a.count, selector=a.candidate.selector, candidate_key=candidate_key(a.candidate)
+                    app,
+                    a.count,
+                    selector=a.candidate.selector,
+                    candidate_key=candidate_key(a.candidate),
+                    tolerations=a.candidate.tolerations,
                 )
                 SCALE_UP_PODS.labels(app=app.name).inc(a.count)
                 self._cooldown_until[app.name] = now + app.scaling.cooldown_s

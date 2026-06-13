@@ -31,9 +31,10 @@ from kubernetes_asyncio.client import (
     V1Pod,
     V1PodSpec,
     V1ResourceRequirements,
+    V1Toleration,
 )
 from sluice_core.auth import mint_worker_token
-from sluice_core.models import AppSpec, WorkerState, WorkerStatus
+from sluice_core.models import AppSpec, Toleration, WorkerState, WorkerStatus
 
 from .inspector import map_pod_state
 
@@ -41,8 +42,33 @@ MANAGED_BY_LABEL_KEY = "app.kubernetes.io/managed-by"
 APP_LABEL_KEY = "app.kubernetes.io/name"
 MANAGED_BY = "sluice"
 CANDIDATE_ANNOTATION = "sluice.jugraj.dev/candidate"
+GPU_RESOURCE = "nvidia.com/gpu"
+_DEFAULT_GPU_TOLERATION = Toleration(key=GPU_RESOURCE, operator="Exists", effect="NoSchedule")
 
 _REAP_STATES = {WorkerState.exited, WorkerState.failed}
+
+
+def _effective_tolerations(app: AppSpec, tolerations: list[Toleration]) -> list[Toleration]:
+    """Author tolerations, plus a default GPU-taint toleration for GPU apps that lack one.
+
+    GPU nodes are tainted (`nvidia.com/gpu`) so non-GPU workloads stay off them; a GPU worker
+    must tolerate that taint to schedule. We add it automatically unless the author already
+    declared a toleration for the GPU key.
+    """
+    out = list(tolerations)
+    if app.resources.gpu and not any(t.key == GPU_RESOURCE for t in out):
+        out.append(_DEFAULT_GPU_TOLERATION)
+    return out
+
+
+def _to_v1_toleration(t: Toleration) -> V1Toleration:
+    # An "Exists" toleration must not carry a value.
+    return V1Toleration(
+        key=t.key or None,
+        operator=t.operator,
+        value=t.value or None if t.operator == "Equal" else None,
+        effect=t.effect or None,
+    )
 
 
 def build_worker_pod(
@@ -54,6 +80,7 @@ def build_worker_pod(
     signing_key: str,
     worker_id: str,
     candidate_key: str = "",
+    tolerations: list[Toleration] | None = None,
 ) -> V1Pod:
     token = mint_worker_token(app=app.name, worker_id=worker_id, key=signing_key)
     env_map = {
@@ -66,7 +93,7 @@ def build_worker_pod(
     env = [V1EnvVar(name=k, value=v) for k, v in env_map.items()]
     res = {"cpu": str(app.resources.cpu), "memory": f"{app.resources.memory_gb}Gi"}
     if app.resources.gpu:
-        res["nvidia.com/gpu"] = str(app.resources.gpu)
+        res[GPU_RESOURCE] = str(app.resources.gpu)
     container = V1Container(
         name="worker",
         image=app.image,
@@ -75,6 +102,7 @@ def build_worker_pod(
         resources=V1ResourceRequirements(requests=res, limits=res),
     )
     annotations = {CANDIDATE_ANNOTATION: candidate_key} if candidate_key else None
+    tols = [_to_v1_toleration(t) for t in _effective_tolerations(app, tolerations or [])]
     return V1Pod(
         metadata=V1ObjectMeta(
             generate_name=f"{app.name}-",
@@ -82,7 +110,12 @@ def build_worker_pod(
             labels={APP_LABEL_KEY: app.name, MANAGED_BY_LABEL_KEY: MANAGED_BY},
             annotations=annotations,
         ),
-        spec=V1PodSpec(restart_policy="OnFailure", node_selector=selector or None, containers=[container]),
+        spec=V1PodSpec(
+            restart_policy="OnFailure",
+            node_selector=selector or None,
+            tolerations=tols or None,
+            containers=[container],
+        ),
     )
 
 
@@ -145,7 +178,15 @@ class KubePodManager(_KubeBase):
         assert self._api_client is not None
         return CoreV1Api(self._api_client)
 
-    async def create_pods(self, app: AppSpec, n: int, *, selector: dict[str, str], candidate_key: str = "") -> None:
+    async def create_pods(
+        self,
+        app: AppSpec,
+        n: int,
+        *,
+        selector: dict[str, str],
+        candidate_key: str = "",
+        tolerations: list[Toleration] | None = None,
+    ) -> None:
         if n <= 0:
             return
 
@@ -158,6 +199,7 @@ class KubePodManager(_KubeBase):
                 signing_key=self._signing_key,
                 worker_id=f"{app.name}-{uuid4().hex[:8]}",
                 candidate_key=candidate_key,
+                tolerations=tolerations,
             )
             async with self._create_sem:
                 await self._core().create_namespaced_pod(
