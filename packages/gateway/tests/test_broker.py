@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from sluice_core.auth import mint_worker_token
+from sluice_core.errors import SigningUnsupported
 from sluice_core.models import Message
 from sluice_gateway.app import build_app
 
@@ -106,3 +107,35 @@ def test_client_routes_still_work_without_signing_key():
     # broker disabled when no signing key; client API unaffected
     app = build_app(queue=FakeQueue(), objects=FakeObjects())
     assert TestClient(app).get("/healthz").json() == {"ok": True}
+
+
+class NonSigningObjects:
+    """A store that cannot sign URLs (local/memory) — lease must fall back to the blob proxy."""
+
+    def __init__(self):
+        self.results = {}
+        self.bodies = {"rid1": b"body-rid1"}
+
+    async def signed_get_request(self, app, rid, *, expires_s):
+        raise SigningUnsupported("local")
+
+    async def signed_put_result(self, app, rid, *, expires_s):
+        raise SigningUnsupported("local")
+
+    async def get_request(self, app, rid):
+        return self.bodies[rid]
+
+    async def put_result(self, app, rid, body):
+        self.results[(app, rid)] = body
+
+
+def test_lease_falls_back_to_blob_proxy_when_signing_unsupported():
+    o = NonSigningObjects()
+    c = _client(objects=o)
+    item = c.post("/internal/v1/lease", json={"max": 4}, headers=_auth()).json()["items"][0]
+    assert item["body_url"] == "/internal/v1/blob/seg/requests/rid1"
+    assert item["result_url"] == "/internal/v1/blob/seg/results/rid1"
+    # the proxy URLs the worker is handed actually round-trip
+    assert c.get(item["body_url"], headers=_auth()).content == b"body-rid1"
+    assert c.put(item["result_url"], content=b"out", headers=_auth()).status_code == 200
+    assert o.results[("seg", "rid1")] == b"out"
