@@ -58,7 +58,6 @@ def _app():
                     machine_type="g2-standard-8",
                     accelerator_type="nvidia-l4",
                     regions=["r1"],
-                    workers_per_vm=2,
                 ),
             )
         ],

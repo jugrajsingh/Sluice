@@ -20,7 +20,15 @@ def test_running_ready():
 
 def test_running_not_ready_is_unhealthy():
     p = _pod("Running", conditions=[{"type": "Ready", "status": "False"}])
+    p["status"]["containerStatuses"] = [{"started": True, "state": {"running": {}}}]
     assert map_pod_state(p)[0] == WorkerState.unhealthy
+
+
+def test_running_but_startup_probe_pending_is_starting():
+    # a sidecar model server still loading: container running, started=False (startup probe not passed)
+    p = _pod("Running", conditions=[{"type": "Ready", "status": "False"}])
+    p["status"]["containerStatuses"] = [{"started": False, "state": {"running": {}}}]
+    assert map_pod_state(p)[0] == WorkerState.starting  # cold start, not unhealthy -> counts as live, never stocked
 
 
 def test_unschedulable_with_reason():

@@ -38,9 +38,7 @@ def _app():
             ),
             VmCandidate(
                 provider="gce",
-                spec=VmPlacementSpec(
-                    pricing="spot", machine_type="g2", regions=["r1", "r2"], workers_per_vm=2, max_vms=3
-                ),
+                spec=VmPlacementSpec(pricing="spot", machine_type="g2", regions=["r1", "r2"], max_vms=3),
             ),
         ],
     )
@@ -149,7 +147,7 @@ async def test_k8s_exhausted_provisions_vm(tmp_path):
     compute = FakeCompute()
     ctl, reg, _ = _controller(tmp_path, compute=compute, cache=cache)
     await ctl.reconcile_one(_app())
-    assert compute.provisioned == [("r1", "spot", 3)]  # ceil(10/2)=5 capped maxVms=3
+    assert compute.provisioned == [("r1", "spot", 3)]  # need 10 units -> capped maxVms=3
     assert (await reg.get_status("m")).candidate == _vm_key("r1")
 
 

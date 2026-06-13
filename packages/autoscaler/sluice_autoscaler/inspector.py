@@ -62,6 +62,11 @@ def map_pod_state(pod: dict) -> tuple[WorkerState, str | None]:
         return WorkerState.starting, None
 
     if phase == "Running":
+        statuses = st.get("containerStatuses", [])
+        # Startup probe not yet passed (e.g. a sidecar model server still loading) -> still starting,
+        # not unhealthy — so a multi-minute cold start isn't mistaken for a failure or stocked out.
+        if any(cs.get("started") is False for cs in statuses):
+            return WorkerState.starting, None
         ready = conds.get("Ready")
         if ready and ready.get("status") == "True":
             return WorkerState.running, None

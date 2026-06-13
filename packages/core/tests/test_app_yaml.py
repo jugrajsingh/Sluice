@@ -30,7 +30,6 @@ spec:
         machineType: g2-standard-8
         acceleratorType: nvidia-l4
         regions: [us-central1, europe-west3]
-        workersPerVm: 2
         lingerSeconds: 300
         maxVms: 5
     - type: kubernetes
@@ -55,7 +54,7 @@ def test_parse_full_doc():
     assert k0.spec.tolerations[0].key == "nvidia.com/gpu"
     assert k0.spec.schedule_grace_s == 120
     vm = app.placement[1]
-    assert vm.provider == "gce" and vm.spec.machine_type == "g2-standard-8" and vm.spec.workers_per_vm == 2
+    assert vm.provider == "gce" and vm.spec.machine_type == "g2-standard-8" and vm.spec.max_vms == 5
     assert app.placement[2].provider == "gke-east" and app.placement[2].spec.pricing == "on-demand"
 
 

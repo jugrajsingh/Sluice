@@ -66,7 +66,7 @@ def test_placement_is_ordered_discriminated_union():
     assert app.placement[0].spec.node_selectors[0] == {"gpu": "l4", "lifecycle": "spot"}
     assert app.placement[0].spec.tolerations[0].effect == "NoSchedule"
     assert app.placement[0].spec.schedule_grace_s == 120
-    assert app.placement[1].spec.machine_type == "g2" and app.placement[1].spec.workers_per_vm == 1
+    assert app.placement[1].spec.machine_type == "g2" and app.placement[1].spec.max_vms == 5
     assert app.placement[2].spec.pricing == "on-demand"
 
 

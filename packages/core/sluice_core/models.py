@@ -82,9 +82,6 @@ class VmPlacementSpec(BaseModel):
     accelerator_type: str = Field("", alias="acceleratorType")
     boot_image: str = Field("", alias="bootImage")
     regions: list[str] = Field(default_factory=list)
-    # Deprecated: packing moves to worker.instances + per-candidate override; removed with the
-    # unit-counting change (plan Task 8). Kept until then so the VM math/tests stay green.
-    workers_per_vm: int = Field(1, alias="workersPerVm")
     linger_seconds: int = Field(300, alias="lingerSeconds")
     max_vms: int = Field(5, alias="maxVms")
 

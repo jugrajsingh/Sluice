@@ -42,7 +42,6 @@ def _app(with_vm=True):
                     pricing="spot",
                     machine_type="g2",
                     regions=["r1", "r2"],
-                    workers_per_vm=2,
                     max_vms=3,
                     linger_seconds=300,
                 ),
@@ -139,7 +138,7 @@ def test_k8s_exhausted_escalates_to_vm():
     p = plan(app, Observed(depth=QueueDepth(visible=100)), stocked=stocked, now=0, cooldown_until=0)
     prov = _of(ProvisionVms, p.actions)
     assert prov and prov[0].candidate.location == "r1"
-    assert prov[0].count == 3  # ceil(10/2)=5 -> capped maxVms=3
+    assert prov[0].count == 3  # need 10 units -> capped maxVms=3
 
 
 def test_all_candidates_stocked_is_held():
@@ -213,7 +212,21 @@ def test_enough_capacity_is_ready():
     vms = [_vm(phase="running", workers=2)]
     pods = [_pod(WorkerState.running, name=f"p{i}") for i in range(3)]
     p = plan(_app(), Observed(pods=pods, vms=vms, depth=QueueDepth(visible=40)), stocked={}, now=0, cooldown_until=0)
-    assert p.phase == "Ready" and not _of(CreatePods, p.actions)  # 5 workers >= ceil(40/10)=4
+    assert p.phase == "Ready" and not _of(CreatePods, p.actions)  # 3 pod + 1 vm = 4 units >= ceil(40/10)=4
+
+
+def test_vm_counts_as_one_unit_regardless_of_packing():
+    # one running VM (packs many replicas internally) = one serving unit; mpw is tuned per packed unit
+    app = _app()
+    p = plan(
+        app,
+        Observed(vms=[_vm(phase="running", workers=8)], depth=QueueDepth(visible=10)),
+        stocked={},
+        now=0,
+        cooldown_until=0,
+    )
+    # desired = ceil(10/10) = 1 unit; the one VM already serves it -> Ready, nothing created
+    assert p.phase == "Ready" and not _of(CreatePods, p.actions) and not _of(ProvisionVms, p.actions)
 
 
 def test_max_workers_caps_desired_across_substrates():

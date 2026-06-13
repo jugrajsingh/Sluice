@@ -91,7 +91,6 @@ def plan(
 ) -> PlacementPlan:
     actions: list[Action] = []
     vm_spec = _vm_spec(app)
-    wpv = vm_spec.workers_per_vm if vm_spec else 1
     max_vms = vm_spec.max_vms if vm_spec else 0
     cand_by_key = {candidate_key(c): c for c in expand_candidates(app)}
 
@@ -145,14 +144,15 @@ def plan(
     if app.desired_state == "Paused":
         return PlacementPlan(actions=actions, phase="Paused")
 
-    # 4. Capacity accounting (pods + VM workers together). Pods we're removing this cycle don't
-    #    count; stuck pods count only while still inside their candidate's grace window.
+    # 4. Capacity accounting in **units** (1 pod = 1 VM = 1 unit; a unit packs `instances` replicas
+    #    internally, so messagesPerWorker is tuned per packed unit). Pods being removed this cycle
+    #    don't count; a stuck pod counts only inside its candidate's grace.
     live_pods = sum(
         1
         for p in observed.pods
         if p.pod not in removing and (p.state in _POD_ACTIVE or (p.state in _STUCK and p.age_s <= grace_for(p)))
     )
-    vm_workers = 0
+    serving_vm_units = 0
     idle_vms: list[VmView] = []
     live_vm_count = 0
     for v in observed.vms:
@@ -160,24 +160,22 @@ def plan(
             continue
         live_vm_count += 1
         if v.phase == "workers_exited":
-            idle_vms.append(v)
-        elif v.phase == "running":
-            vm_workers += v.workers_running or wpv
-        else:  # provisioning/booting: count promised capacity
-            vm_workers += wpv
+            idle_vms.append(v)  # warm but idle — restartable, doesn't count as serving
+        else:  # running or provisioning/booting -> one serving unit
+            serving_vm_units += 1
 
     mpw = max(app.scaling.messages_per_worker, 1)
     desired = math.ceil(observed.depth.visible / mpw)
     if app.scaling.max_workers > 0:
         desired = min(desired, app.scaling.max_workers)
-    need = desired - (live_pods + vm_workers)
+    need = desired - (live_pods + serving_vm_units)
 
-    # 5. Warm restarts beat provisioning.
+    # 5. Warm restarts beat provisioning (one unit per VM).
     for v in idle_vms:
         if need <= 0:
             break
         actions.append(CommandVm(vm_id=v.record.id, command="start_workers"))
-        need -= wpv
+        need -= 1
 
     if need <= 0:
         return PlacementPlan(actions=actions, phase="Ready")
@@ -196,7 +194,7 @@ def plan(
         if cand.type == "kubernetes":
             actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
             return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
-        n = min(math.ceil(need / wpv), max(max_vms - live_vm_count, 0))
+        n = min(need, max(max_vms - live_vm_count, 0))  # one VM = one unit
         if n <= 0:
             continue  # at VM cap for this app; try next candidate
         actions.append(ProvisionVms(candidate=cand, count=n))
