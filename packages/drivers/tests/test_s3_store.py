@@ -17,3 +17,10 @@ class TestS3Store(ObjectStoreConformance):
         )
         await s.ensure_bucket()
         return s
+
+    async def test_signed_url_method_changes_signature(self, store):
+        await store.put("k", b"v")
+        get_url = await store.signed_url("k", method="GET", expires_s=120)
+        put_url = await store.signed_url("k", method="PUT", expires_s=120)
+        assert "Signature" in put_url  # SigV2 (Signature=) or SigV4 (X-Amz-Signature=)
+        assert get_url != put_url  # the HTTP method participates in the presign signature

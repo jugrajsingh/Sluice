@@ -5,7 +5,7 @@ import os
 
 import aiohttp
 from gcloud.aio.storage import Storage
-from sluice_core.errors import KeyNotFound
+from sluice_core.errors import KeyNotFound, SigningUnsupported
 
 
 class GcsObjectStore:
@@ -64,8 +64,18 @@ class GcsObjectStore:
             if "404" not in str(e):
                 raise
 
-    async def signed_url(self, key: str, *, expires_s: int) -> str:
-        return f"https://storage.googleapis.com/{self._bucket}/{key}"
+    def _signing_client(self):
+        from google.cloud import storage  # sync client; only used for V4 signing with ADC
+
+        return storage.Client()
+
+    async def signed_url(self, key: str, *, method: str = "GET", expires_s: int) -> str:
+        if self._endpoint:
+            raise SigningUnsupported("GCS emulator cannot produce signed URLs; use the broker blob proxy")
+        from datetime import timedelta
+
+        blob = self._signing_client().bucket(self._bucket).blob(key)
+        return blob.generate_signed_url(version="v4", method=method.upper(), expiration=timedelta(seconds=expires_s))
 
     async def list_keys(self, prefix: str) -> list[str]:
         resp = await self._storage.list_objects(self._bucket, params={"prefix": prefix})

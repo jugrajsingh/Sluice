@@ -7,7 +7,7 @@ dependencies = ["sluice-core"]
 [project.optional-dependencies]
 redis = ["redis>=5"]
 aws = ["aioboto3>=13"]
-gcs = ["gcloud-aio-storage>=9"]
+gcs = ["gcloud-aio-storage>=9", "google-cloud-storage>=2.18"]
 test = ["pytest>=8", "pytest-asyncio>=0.23", "fakeredis>=2.23", "moto[server]>=5", "testcontainers>=4"]
 
 [tool.uv.sources]

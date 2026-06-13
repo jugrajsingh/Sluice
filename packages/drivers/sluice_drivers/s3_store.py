@@ -62,11 +62,10 @@ class S3ObjectStore:
         async with self._client() as c:
             await c.delete_object(Bucket=self._bucket, Key=key)
 
-    async def signed_url(self, key: str, *, expires_s: int) -> str:
+    async def signed_url(self, key: str, *, method: str = "GET", expires_s: int) -> str:
+        op = "put_object" if method.upper() == "PUT" else "get_object"
         async with self._client() as c:
-            return await c.generate_presigned_url(
-                "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=expires_s
-            )
+            return await c.generate_presigned_url(op, Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=expires_s)
 
     async def list_keys(self, prefix: str) -> list[str]:
         async with self._client() as c:
