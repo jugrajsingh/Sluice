@@ -174,6 +174,12 @@
         <p>Request ID in the queue, body and result in the bucket. Any worker that can
            read both can serve — a pod in your cluster or a VM on another continent.</p>
       </div>
+      <div class="card">
+        <h3>Pack the GPU, no MPS</h3>
+        <p>Declare how many model replicas share one GPU — run your own <code>BaseHandler</code>
+           in-process, or front an unmodified HTTP model server with a Sluice queue-adapter. Same
+           model on Kubernetes and burst VMs, tuned per GPU.</p>
+      </div>
     </div>
   </section>
 

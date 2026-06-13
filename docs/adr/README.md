@@ -20,6 +20,7 @@ Numbered in the order recorded; the **Date** field in each ADR is the decision d
 | [004](004-priced-placement-playbook.md) | Priced placement playbook with shared stockouts | 2026-06-07 | Accepted (ordering superseded by ADR-006) |
 | [005](005-shared-persistent-backends-only.md) | Deployable backends are shared and persistent only | 2026-06-13 | Accepted |
 | [006](006-multi-cluster-ordered-placement.md) | Multi-cluster, ordered, node-aware placement | 2026-06-13 | Accepted |
+| [007](007-worker-archetypes-and-packing.md) | Worker archetypes (handler / sidecar) and GPU packing | 2026-06-14 | Accepted |
 
 ## Template
 

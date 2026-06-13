@@ -26,6 +26,10 @@ model** — the SDK, charts, autoscaler, and gateway do the rest.
   (possibly GPU-less) Sluice can place workers across many clusters and clouds. Workers only
   need the queue and the bucket, so it doesn't matter where they run. See
   [docs/runbook-vm-burst.md](docs/runbook-vm-burst.md) and `docs/adr/006`.
+- **Pack the GPU, no MPS** — declare `worker.instances` to pack N model replicas on one GPU:
+  `handler` images run N `BaseHandler` processes via a sequential launcher; `sidecar` images keep an
+  unmodified HTTP model server fed by a Sluice queue-adapter. Per-candidate, so an L40S packs more
+  than an L4. See `docs/app-spec.md` and ADR-007.
 - **Interface-first & config-driven** — Queue, ObjectStore, AppRegistry, Cache,
   InferenceObjects are `Protocol`s with swappable drivers selected by config. Swap
   Redis↔SQS or S3↔GCS with a values change, no rebuild.
