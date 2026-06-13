@@ -18,6 +18,7 @@ Numbered in the order recorded; the **Date** field in each ADR is the decision d
 | [002](002-short-lived-worker-credentials.md) | Short-lived, app-scoped worker credentials (JWT + pre-signed URLs) | 2026-06-13 | Accepted |
 | [003](003-object-store-spec-store.md) | Object-store spec store as the source of truth | 2026-06-07 | Accepted |
 | [004](004-priced-placement-playbook.md) | Priced placement playbook with shared stockouts | 2026-06-07 | Accepted |
+| [005](005-shared-persistent-backends-only.md) | Deployable backends are shared and persistent only | 2026-06-13 | Accepted |
 
 ## Template
 

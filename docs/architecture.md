@@ -81,7 +81,7 @@ exhausted and the app permits it. See **ADR-004** (priced placement playbook).
 |---|---|---|
 | Queue | request IDs (Redis Streams consumer groups; SQS) | `redis.asyncio`, `aiobotocore` |
 | Object store | request bodies, results, spec store, cache | `aioboto3` (S3/MinIO), `gcloud-aio-storage` (GCS) |
-| Cache | stockout board, sync-result cache (Redis / object store / memory) | pluggable |
+| Cache | stockout board (Redis or object store — shared + persistent, see **ADR-005**) | pluggable |
 | Kubernetes | create/observe worker pods, leader-election lease | `kubernetes_asyncio` |
 | Terraform | burst VM provisioning (GCE, EC2) | rendered modules under `infra/terraform` |
 
