@@ -19,13 +19,10 @@ class BrokerClient:
             timeout=timeout_s,
             transport=transport,
         )
-        # Bare client for absolute pre-signed object-store URLs — the worker JWT must NOT
-        # be sent to S3/GCS (they reject requests carrying both a query signature and an
-        # Authorization header).
+        # Bare client for pre-signed object-store URLs — the worker JWT must NOT be sent to
+        # S3/GCS (they reject a request carrying both a query signature and an Authorization
+        # header). Object I/O always uses pre-signed URLs, so it always goes through here.
         self._bare = httpx.AsyncClient(timeout=timeout_s, transport=transport)
-
-    def _io_client(self, url: str) -> httpx.AsyncClient:
-        return self._bare if url.startswith(("http://", "https://")) else self._http
 
     async def _post(self, path: str, json: dict) -> dict:
         resp = await self._http.post(path, json=json)
@@ -47,12 +44,12 @@ class BrokerClient:
         await self._post("/internal/v1/nack", {"lease_id": lease_id})
 
     async def get(self, url: str) -> bytes:
-        resp = await self._io_client(url).get(url)
+        resp = await self._bare.get(url)
         resp.raise_for_status()
         return resp.content
 
     async def put(self, url: str, data: bytes) -> None:
-        resp = await self._io_client(url).put(url, content=data)
+        resp = await self._bare.put(url, content=data)
         resp.raise_for_status()
 
     async def aclose(self) -> None:

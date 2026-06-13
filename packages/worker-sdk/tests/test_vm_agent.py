@@ -1,6 +1,6 @@
 import json
 
-from sluice_core.drivers.local_store import LocalObjectStore
+from sluice_core.testing.fakes import FakeObjectStore
 from sluice_core.vm_paths import desired_key, heartbeat_key
 from sluice_worker.vm_agent import VmAgent
 
@@ -28,13 +28,13 @@ def _agent(store, docker, linger=100):
         worker_image="img",
         workers=2,
         linger_s=linger,
-        env={"QUEUE__BACKEND": "memory"},
+        env={"WORKER__BROKER_URL": "http://sluice-gateway"},
         runner=docker,
     )
 
 
-async def test_start_writes_running_heartbeat(tmp_path):
-    store, docker = LocalObjectStore(root=str(tmp_path)), FakeDocker()
+async def test_start_writes_running_heartbeat():
+    store, docker = FakeObjectStore(), FakeDocker()
     agent = _agent(store, docker)
     await agent.start_workers()
     assert await agent.step(now=0.0) is True
@@ -43,8 +43,8 @@ async def test_start_writes_running_heartbeat(tmp_path):
     assert sum(1 for c in docker.calls if c[:2] == ["docker", "run"]) == 2
 
 
-async def test_idle_then_linger_then_exit(tmp_path):
-    store, docker = LocalObjectStore(root=str(tmp_path)), FakeDocker()
+async def test_idle_then_linger_then_exit():
+    store, docker = FakeObjectStore(), FakeDocker()
     agent = _agent(store, docker, linger=100)
     assert await agent.step(now=0.0) is True  # workers exited (0 running)
     hb = json.loads(await store.get(heartbeat_key("m", "v1")))
@@ -55,8 +55,8 @@ async def test_idle_then_linger_then_exit(tmp_path):
     assert hb["phase"] == "stopping"
 
 
-async def test_warm_restart_on_command(tmp_path):
-    store, docker = LocalObjectStore(root=str(tmp_path)), FakeDocker()
+async def test_warm_restart_on_command():
+    store, docker = FakeObjectStore(), FakeDocker()
     agent = _agent(store, docker)
     assert await agent.step(now=0.0) is True  # idle
     await store.put(desired_key("m", "v1"), json.dumps({"action": "start_workers"}).encode())
@@ -66,8 +66,8 @@ async def test_warm_restart_on_command(tmp_path):
     assert not await store.exists(desired_key("m", "v1"))  # command consumed
 
 
-async def test_shutdown_command_exits(tmp_path):
-    store, docker = LocalObjectStore(root=str(tmp_path)), FakeDocker()
+async def test_shutdown_command_exits():
+    store, docker = FakeObjectStore(), FakeDocker()
     agent = _agent(store, docker)
     await store.put(desired_key("m", "v1"), json.dumps({"action": "shutdown"}).encode())
     assert await agent.step(now=0.0) is False

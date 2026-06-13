@@ -1,17 +1,14 @@
 import asyncio
 
 import httpx
-from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.drivers.memory import MemoryQueue
 from sluice_core.inference_objects import ObjectStoreInferenceObjects
+from sluice_core.testing.fakes import FakeObjectStore, FakeQueue
 from sluice_gateway.app import build_app
 from sluice_gateway.util import content_hash
 
 
-def _stack(tmp_path):
-    q = MemoryQueue()
-    objs = ObjectStoreInferenceObjects(store=LocalObjectStore(root=str(tmp_path)))
-    return q, objs
+def _stack():
+    return FakeQueue(), ObjectStoreInferenceObjects(store=FakeObjectStore())
 
 
 def _client(app):
@@ -27,8 +24,8 @@ async def _worker_once(q, objs, model):
         await q.ack(model, m)
 
 
-async def test_cache_hit_returns_200(tmp_path):
-    q, objs = _stack(tmp_path)
+async def test_cache_hit_returns_200():
+    q, objs = _stack()
     await objs.put_result("topwear", content_hash(b"img"), b"CACHED")
     app = build_app(queue=q, objects=objs, t_sync_s=0)
     async with _client(app) as c:
@@ -36,8 +33,8 @@ async def test_cache_hit_returns_200(tmp_path):
     assert r.status_code == 200 and r.content == b"CACHED"
 
 
-async def test_miss_returns_202_with_ticket(tmp_path):
-    q, objs = _stack(tmp_path)
+async def test_miss_returns_202_with_ticket():
+    q, objs = _stack()
     app = build_app(queue=q, objects=objs, t_sync_s=0)  # no warm worker, no wait
     async with _client(app) as c:
         r = await c.post("/v1/topwear/infer", content=b"img")
@@ -47,8 +44,8 @@ async def test_miss_returns_202_with_ticket(tmp_path):
     assert (await q.depth("topwear")).visible == 1  # job enqueued
 
 
-async def test_queue_carries_only_the_request_id(tmp_path):
-    q, objs = _stack(tmp_path)
+async def test_queue_carries_only_the_request_id():
+    q, objs = _stack()
     app = build_app(queue=q, objects=objs, t_sync_s=0)
     async with _client(app) as c:
         await c.post("/v1/topwear/infer", content=b"img")
@@ -57,8 +54,8 @@ async def test_queue_carries_only_the_request_id(tmp_path):
     assert await objs.get_request("topwear", msg.body.decode()) == b"img"
 
 
-async def test_sync_sugar_returns_200_when_worker_fast(tmp_path):
-    q, objs = _stack(tmp_path)
+async def test_sync_sugar_returns_200_when_worker_fast():
+    q, objs = _stack()
     app = build_app(queue=q, objects=objs, t_sync_s=2)
     async with _client(app) as c:
         task = asyncio.create_task(c.post("/v1/topwear/infer", content=b"img"))
@@ -68,8 +65,8 @@ async def test_sync_sugar_returns_200_when_worker_fast(tmp_path):
     assert r.status_code == 200 and r.content == b"MASKS:img"
 
 
-async def test_status_returns_result_after_worker(tmp_path):
-    q, objs = _stack(tmp_path)
+async def test_status_returns_result_after_worker():
+    q, objs = _stack()
     app = build_app(queue=q, objects=objs, t_sync_s=0)
     async with _client(app) as c:
         sub = await c.post("/v1/topwear/infer", content=b"img")

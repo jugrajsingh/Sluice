@@ -1,3 +1,12 @@
+"""In-process test doubles for unit tests across the workspace.
+
+These are NOT deployable backends — they are absent from the driver factory, the
+Settings backend lists, and the Helm chart. Deployment requires shared, persistent
+backends (Redis/SQS queue; S3/MinIO/GCS object store), which are conformance-tested
+against real drivers + emulators (moto/fakeredis) in the `sluice-drivers` package.
+Use these only to exercise component logic that needs *some* Queue/ObjectStore.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,12 +14,40 @@ import time
 import uuid
 from collections import defaultdict, deque
 
-from ..errors import UnknownAckToken
+from ..errors import KeyNotFound, UnknownAckToken
 from ..models import Message, QueueDepth
 
 
-class MemoryQueue:
-    """In-process reference Queue with a visibility-timeout lease model."""
+class FakeObjectStore:
+    """Dict-backed ObjectStore test double. signed_url returns a non-functional placeholder."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    async def put(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
+        self._data[key] = data
+
+    async def get(self, key: str) -> bytes:
+        try:
+            return self._data[key]
+        except KeyError as e:
+            raise KeyNotFound(key) from e
+
+    async def exists(self, key: str) -> bool:
+        return key in self._data
+
+    async def delete(self, key: str) -> None:
+        self._data.pop(key, None)
+
+    async def signed_url(self, key: str, *, method: str = "GET", expires_s: int) -> str:
+        return f"memory://{method}/{key}?exp={expires_s}"
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        return sorted(k for k in self._data if k.startswith(prefix))
+
+
+class FakeQueue:
+    """In-process Queue test double with a visibility-timeout lease model."""
 
     def __init__(self, *, default_lease_s: int = 30) -> None:
         self._ready: dict[str, deque[Message]] = defaultdict(deque)

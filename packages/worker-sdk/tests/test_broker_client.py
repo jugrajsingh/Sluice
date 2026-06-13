@@ -8,21 +8,24 @@ def _client(handler):
 
 
 @pytest.mark.asyncio
-async def test_jwt_only_sent_to_gateway_not_object_storage():
-    seen = {}
+async def test_jwt_on_control_endpoints_not_on_object_io():
+    seen = []
 
     def handler(request):
-        seen[str(request.url)] = request.headers.get("authorization")
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if request.url.path == "/internal/v1/lease":
+            return httpx.Response(200, json={"items": []})
         return httpx.Response(200, content=b"ok")
 
     bc = _client(handler)
-    await bc.get("/internal/v1/blob/seg/requests/r1")  # proxy -> gateway, authed
-    await bc.get("https://s3.example/obj?sig=x")  # cloud -> bare, no auth
+    await bc.lease(4)  # control -> authed (to the gateway)
+    await bc.get("https://s3.example/obj?sig=x")  # object I/O -> bare, no JWT to storage
     await bc.put("https://s3.example/put?sig=y", b"data")
     await bc.aclose()
-    assert seen["http://gw/internal/v1/blob/seg/requests/r1"] == "Bearer T"
-    assert seen["https://s3.example/obj?sig=x"] is None
-    assert seen["https://s3.example/put?sig=y"] is None
+    by_url = dict(seen)
+    assert by_url["http://gw/internal/v1/lease"] == "Bearer T"
+    assert by_url["https://s3.example/obj?sig=x"] is None
+    assert by_url["https://s3.example/put?sig=y"] is None
 
 
 @pytest.mark.asyncio

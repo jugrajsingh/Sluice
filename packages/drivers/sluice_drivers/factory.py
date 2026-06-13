@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from sluice_core.config import Settings
-from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.drivers.memory import MemoryQueue
 from sluice_core.interfaces import AppRegistry, Cache, ObjectStore, Queue
 
 
 def build_queue(s: Settings) -> Queue:
     b = s.queue.backend
     o = s.queue.options
-    if b == "memory":
-        return MemoryQueue()
     if b == "redis":
         import redis.asyncio as aioredis
 
@@ -31,8 +27,6 @@ def build_queue(s: Settings) -> Queue:
 def build_object_store(s: Settings) -> ObjectStore:
     b = s.object_store.backend
     o = s.object_store.options
-    if b == "local":
-        return LocalObjectStore(root=o.get("root", "/tmp/sluice"))
     if b in ("s3", "minio"):
         from .s3_store import S3ObjectStore
 
@@ -48,10 +42,6 @@ def build_object_store(s: Settings) -> ObjectStore:
 
 def build_registry(s: Settings, *, store: ObjectStore | None = None) -> AppRegistry:
     b = s.registry.backend
-    if b == "memory":
-        from sluice_core.drivers.registry_memory import MemoryAppRegistry
-
-        return MemoryAppRegistry()
     if b == "objectstore":
         from sluice_core.drivers.registry_objectstore import ObjectStoreAppRegistry
 
@@ -64,10 +54,6 @@ def build_registry(s: Settings, *, store: ObjectStore | None = None) -> AppRegis
 def build_cache(s: Settings, *, store: ObjectStore | None = None) -> Cache:
     b = s.cache.backend
     o = s.cache.options
-    if b == "memory":
-        from sluice_core.drivers.cache_memory import MemoryCache
-
-        return MemoryCache()
     if b == "redis":
         import redis.asyncio as aioredis
 

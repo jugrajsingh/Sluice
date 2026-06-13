@@ -14,22 +14,22 @@ SETTINGS_YAML = os.getenv("SETTINGS_YAML", "local.env.yaml")
 
 
 class QueueSettings(BaseModel):
-    backend: str = "memory"  # memory | redis | sqs | nats | pubsub
+    backend: str = "redis"  # redis | sqs  (shared queue — workers reach it only via the gateway broker)
     options: dict[str, str] = Field(default_factory=dict)
 
 
 class ObjectStoreSettings(BaseModel):
-    backend: str = "local"  # local | s3 | gcs | minio
+    backend: str = "s3"  # s3 | minio | gcs  (shared, signed-URL-capable object store)
     options: dict[str, str] = Field(default_factory=dict)
 
 
 class RegistrySettings(BaseModel):
-    backend: str = "objectstore"  # objectstore | memory
+    backend: str = "objectstore"  # objectstore
     options: dict[str, str] = Field(default_factory=dict)
 
 
 class CacheSettings(BaseModel):
-    backend: str = "memory"  # memory | redis | objectstore
+    backend: str = "objectstore"  # redis | objectstore  (shared + persistent — survives autoscaler restart)
     options: dict[str, str] = Field(default_factory=dict)
 
 

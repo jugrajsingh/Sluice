@@ -3,8 +3,8 @@ from sluice_core.config import Settings
 
 def test_defaults():
     s = Settings()
-    assert s.queue.backend == "memory"
-    assert s.object_store.backend == "local"
+    assert s.queue.backend == "redis"
+    assert s.object_store.backend == "s3"
 
 
 def test_env_override(monkeypatch):
@@ -26,4 +26,4 @@ def test_yaml_loaded(tmp_path, monkeypatch):
 def test_placement_defaults():
     s = Settings()
     assert s.placement.stockout_ttl_s == 600 and s.placement.boot_deadline_s == 600
-    assert s.registry.backend == "objectstore" and s.cache.backend == "memory"
+    assert s.registry.backend == "objectstore" and s.cache.backend == "objectstore"

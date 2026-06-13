@@ -1,5 +1,3 @@
-import json
-
 import httpx
 from sluice_cli.main import run
 
@@ -49,11 +47,16 @@ def test_get_pause_resume_delete():
     assert ("DELETE", "/v1/apps/topwear") in calls
 
 
-def test_apply_direct_writes_spec_store(tmp_path, monkeypatch):
+def test_apply_direct_routes_to_spec_store(tmp_path, monkeypatch):
+    # CLI wiring only: --direct parses the spec and hands it to _direct_put. The actual
+    # store write is covered by the ObjectStoreAppRegistry conformance, not re-tested here.
     f = tmp_path / "app.yaml"
     f.write_text(APP_YAML)
-    monkeypatch.setenv("REGISTRY__BACKEND", "objectstore")
-    monkeypatch.setenv("OBJECT_STORE__BACKEND", "local")
-    monkeypatch.setenv("OBJECT_STORE__OPTIONS", json.dumps({"root": str(tmp_path / "store")}))
+    captured = {}
+
+    async def fake_direct_put(text):
+        captured["text"] = text
+
+    monkeypatch.setattr("sluice_cli.main._direct_put", fake_direct_put)
     assert run(["apply", "-f", str(f), "--direct"]) == 0
-    assert (tmp_path / "store" / "sluice" / "apps" / "topwear" / "spec.yaml").is_file()
+    assert "topwear" in captured["text"]

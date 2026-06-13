@@ -1,7 +1,6 @@
 import httpx
-from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.drivers.memory import MemoryQueue
 from sluice_core.inference_objects import ObjectStoreInferenceObjects
+from sluice_core.testing.fakes import FakeObjectStore, FakeQueue
 from sluice_gateway.app import build_app
 
 
@@ -9,9 +8,9 @@ def _client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 
-async def test_batch_enqueues_all_and_reports(tmp_path):
-    q = MemoryQueue()
-    objs = ObjectStoreInferenceObjects(store=LocalObjectStore(root=str(tmp_path)))
+async def test_batch_enqueues_all_and_reports():
+    q = FakeQueue()
+    objs = ObjectStoreInferenceObjects(store=FakeObjectStore())
     app = build_app(queue=q, objects=objs, t_sync_s=0)
     async with _client(app) as c:
         r = await c.post("/v1/topwear/batch", json={"inputs": ["aGVsbG8=", "d29ybGQ="]})  # b64

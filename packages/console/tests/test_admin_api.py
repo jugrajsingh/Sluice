@@ -1,7 +1,8 @@
 import httpx
 from sluice_console.app import build_console_app
-from sluice_core.drivers.registry_memory import MemoryAppRegistry
+from sluice_core.drivers.registry_objectstore import ObjectStoreAppRegistry
 from sluice_core.models import QueueDepth
+from sluice_core.testing.fakes import FakeObjectStore
 
 APP_YAML = """
 apiVersion: sluice/v1
@@ -26,7 +27,7 @@ def _client(app):
 
 
 async def test_apply_then_get_then_delete():
-    reg = MemoryAppRegistry()
+    reg = ObjectStoreAppRegistry(store=FakeObjectStore())
     app = build_console_app(registry=reg, queue=_Q(), inspector=_I())
     async with _client(app) as c:
         r = await c.put("/v1/apps/topwear", content=APP_YAML)
@@ -40,7 +41,7 @@ async def test_apply_then_get_then_delete():
 
 
 async def test_apply_rejects_invalid_and_name_mismatch():
-    app = build_console_app(registry=MemoryAppRegistry(), queue=_Q(), inspector=_I())
+    app = build_console_app(registry=ObjectStoreAppRegistry(store=FakeObjectStore()), queue=_Q(), inspector=_I())
     async with _client(app) as c:
         bad = await c.put("/v1/apps/topwear", content="apiVersion: nope")
         assert bad.status_code == 422

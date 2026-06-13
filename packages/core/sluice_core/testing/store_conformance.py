@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sluice_core.errors import KeyNotFound, SigningUnsupported
+from sluice_core.errors import KeyNotFound
 from sluice_core.interfaces import ObjectStore
 
 
@@ -36,11 +36,7 @@ class ObjectStoreConformance:
 
     async def test_signed_url_nonempty(self, store: ObjectStore) -> None:
         await store.put("k3", b"v")
-        try:
-            url = await store.signed_url("k3", expires_s=60)
-        except SigningUnsupported:
-            return  # stores that can't sign (local/memory) are served via the broker blob proxy
-        assert url != ""
+        assert (await store.signed_url("k3", expires_s=60)) != ""
 
     async def test_put_overwrites_existing_key(self, store: ObjectStore) -> None:
         await store.put("ow", b"first")

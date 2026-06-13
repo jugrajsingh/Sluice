@@ -2,9 +2,8 @@ import json
 
 from sluice_autoscaler.controller import Controller, PodManager
 from sluice_autoscaler.vm_commands import VmCommander
-from sluice_core.drivers.cache_memory import MemoryCache
-from sluice_core.drivers.local_store import LocalObjectStore
-from sluice_core.drivers.registry_memory import MemoryAppRegistry
+from sluice_core.drivers.cache_objectstore import ObjectStoreCache
+from sluice_core.drivers.registry_objectstore import ObjectStoreAppRegistry
 from sluice_core.errors import ProvisionFailure
 from sluice_core.models import (
     AppSpec,
@@ -20,6 +19,7 @@ from sluice_core.models import (
     WorkerState,
     WorkerStatus,
 )
+from sluice_core.testing.fakes import FakeObjectStore
 from sluice_core.vm_paths import desired_key, heartbeat_key
 
 
@@ -88,8 +88,8 @@ class FakeCompute:
 
 
 def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=None):
-    reg = MemoryAppRegistry()
-    store = LocalObjectStore(root=str(tmp_path))
+    store = FakeObjectStore()
+    reg = ObjectStoreAppRegistry(store=store)
     ctl = Controller(
         registry=reg,
         queue=FakeQueue(visible),
@@ -97,7 +97,7 @@ def _controller(tmp_path, *, compute=None, inspector=None, visible=100, cache=No
         pods=FakePods(),
         compute=compute,
         commander=VmCommander(store=store),
-        cache=cache or MemoryCache(),
+        cache=cache or ObjectStoreCache(store=store),
         store=store,
     )
     return ctl, reg, store
@@ -120,7 +120,7 @@ async def test_stuck_pod_reaped_and_marked(tmp_path):
             candidate="kubernetes/k8s/z1/l4/spot",
         )
     ]
-    cache = MemoryCache()
+    cache = ObjectStoreCache(store=FakeObjectStore())
     ctl, _reg, _ = _controller(tmp_path, inspector=FakeInspector(stuck), cache=cache)
     await ctl.reconcile_one(_app())
     assert "p" in ctl._pods.deleted
@@ -128,7 +128,7 @@ async def test_stuck_pod_reaped_and_marked(tmp_path):
 
 
 async def test_k8s_exhausted_provisions_vm(tmp_path):
-    cache = MemoryCache()
+    cache = ObjectStoreCache(store=FakeObjectStore())
     await cache.set("stockout/kubernetes/k8s/z1/l4/spot", b"out", ttl_s=600)
     compute = FakeCompute()
     ctl, reg, _ = _controller(tmp_path, compute=compute, cache=cache)
@@ -138,7 +138,7 @@ async def test_k8s_exhausted_provisions_vm(tmp_path):
 
 
 async def test_provision_stockout_marks_shared_cache_then_next_region(tmp_path):
-    cache = MemoryCache()
+    cache = ObjectStoreCache(store=FakeObjectStore())
     await cache.set("stockout/kubernetes/k8s/z1/l4/spot", b"out", ttl_s=600)
     compute = FakeCompute(fail_regions={"r1"})
     ctl, _reg, _ = _controller(tmp_path, compute=compute, cache=cache)

@@ -18,15 +18,15 @@ pytestmark = pytest.mark.skipif(
 async def test_scale_up_then_reap_on_kind():
     from sluice_autoscaler.controller import Controller
     from sluice_autoscaler.k8s import KubeClusterInspector, KubePodManager
-    from sluice_core.drivers.memory import MemoryQueue
-    from sluice_core.drivers.registry_memory import MemoryAppRegistry
+    from sluice_core.drivers.registry_objectstore import ObjectStoreAppRegistry
     from sluice_core.models import AppSpec
+    from sluice_core.testing.fakes import FakeObjectStore, FakeQueue
 
     ns = os.environ.get("SLUICE_KIND_NAMESPACE", "default")
     model = os.environ.get("SLUICE_KIND_MODEL", "kind-model")
     kube_kw = {"in_cluster": False, "config_path": os.environ.get("KUBECONFIG"), "namespace": ns}
 
-    registry = MemoryAppRegistry()
+    registry = ObjectStoreAppRegistry(store=FakeObjectStore())
     await registry.put_app(
         AppSpec(name=model, image=os.environ.get("SLUICE_KIND_IMAGE", "busybox"), handler="handler:H")
     )
@@ -35,7 +35,7 @@ async def test_scale_up_then_reap_on_kind():
     for c in (pods, inspector):
         await c.open()
 
-    queue = MemoryQueue()
+    queue = FakeQueue()
     for i in range(100):
         await queue.enqueue(model, f"job{i}".encode())
 

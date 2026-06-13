@@ -1,13 +1,12 @@
 import pytest
-from sluice_core.errors import SigningUnsupported
 from sluice_drivers.gcs_store import GcsObjectStore
 
 
 @pytest.mark.asyncio
-async def test_gcs_emulator_cannot_sign():
+async def test_gcs_emulator_returns_plain_url():
     store = GcsObjectStore(bucket="b", endpoint="http://localhost:4443")
-    with pytest.raises(SigningUnsupported):
-        await store.signed_url("k", method="GET", expires_s=60)
+    url = await store.signed_url("k", method="GET", expires_s=60)
+    assert url and "localhost:4443" in url  # plain emulator URL, no real V4 signing
 
 
 @pytest.mark.asyncio

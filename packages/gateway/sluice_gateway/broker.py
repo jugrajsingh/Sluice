@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sluice_core.auth import TokenError, verify_worker_token
-from sluice_core.errors import SigningUnsupported
 from sluice_core.models import Message
 
 _bearer = HTTPBearer(auto_error=False)
@@ -42,15 +41,6 @@ def build_broker_router(*, queue, objects, signing_key: str, lease_visibility_s:
     async def lease(payload: LeaseIn, c: dict = Depends(claims)):
         app = c["app"]
         msgs = await queue.receive(app, max_messages=payload.max, wait_seconds=0)
-
-        async def _url(kind: str, signer, rid: str) -> str:
-            # Cloud stores hand back a direct-to-storage signed URL. local/memory stores
-            # can't sign, so route the worker through the gateway's authenticated blob proxy.
-            try:
-                return await signer(app, rid, expires_s=url_ttl_s)
-            except SigningUnsupported:
-                return f"/internal/v1/blob/{app}/{kind}/{rid}"
-
         items = []
         for m in msgs:
             rid = m.body.decode()
@@ -58,8 +48,8 @@ def build_broker_router(*, queue, objects, signing_key: str, lease_visibility_s:
                 {
                     "request_id": rid,
                     "lease_id": m.ack_token,
-                    "body_url": await _url("requests", objects.signed_get_request, rid),
-                    "result_url": await _url("results", objects.signed_put_result, rid),
+                    "body_url": await objects.signed_get_request(app, rid, expires_s=url_ttl_s),
+                    "result_url": await objects.signed_put_result(app, rid, expires_s=url_ttl_s),
                 }
             )
         return {"items": items, "visibility_s": lease_visibility_s}
@@ -78,20 +68,6 @@ def build_broker_router(*, queue, objects, signing_key: str, lease_visibility_s:
     @r.post("/nack")
     async def nack(payload: IdIn, c: dict = Depends(claims)):
         await queue.nack(c["app"], Message(id=payload.lease_id, body=b"", ack_token=payload.lease_id))
-        return {"ok": True}
-
-    @r.get("/blob/{app}/{kind}/{rid}")
-    async def blob_get(app: str, kind: str, rid: str, c: dict = Depends(claims)):
-        if c["app"] != app:
-            raise HTTPException(status_code=403, detail="app mismatch")
-        data = await (objects.get_request(app, rid) if kind == "requests" else objects.get_result(app, rid))
-        return Response(content=data, media_type="application/octet-stream")
-
-    @r.put("/blob/{app}/{kind}/{rid}")
-    async def blob_put(app: str, kind: str, rid: str, request: Request, c: dict = Depends(claims)):
-        if c["app"] != app or kind != "results":
-            raise HTTPException(status_code=403, detail="forbidden")
-        await objects.put_result(app, rid, await request.body())
         return {"ok": True}
 
     return r
