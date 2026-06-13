@@ -110,6 +110,32 @@ async def test_warm_restart_on_command():
     assert not await store.exists(desired_key("m", "v1"))  # command consumed
 
 
+async def test_start_workers_clears_stale_container_before_run():
+    store, docker = FakeObjectStore(), FakeDocker()
+    await _agent(store, docker, worker_type="handler", instances=2).start_workers()
+    rm_idx = next(i for i, c in enumerate(docker.calls) if c[:3] == ["docker", "rm", "-f"] and "sluice-worker" in c)
+    run_idx = next(i for i, c in enumerate(docker.calls) if c[:2] == ["docker", "run"] and "sluice-worker" in c)
+    assert rm_idx < run_idx  # stale container removed before the named run -> no --name collision
+
+
+async def test_warm_restart_failed_run_reports_workers_exited_not_running():
+    class FailRunDocker(FakeDocker):
+        async def __call__(self, args):
+            self.calls.append(args)
+            if args[:2] == ["docker", "run"]:
+                return 1, "name collision"  # run fails; nothing comes up
+            if args[:2] == ["docker", "ps"]:
+                return 0, "\n".join(f"c{i}" for i in range(self.running))
+            return 0, ""
+
+    store, docker = FakeObjectStore(), FailRunDocker()
+    agent = _agent(store, docker)
+    await store.put(desired_key("m", "v1"), json.dumps({"action": "start_workers"}).encode())
+    assert await agent.step(now=0.0) is True
+    hb = json.loads(await store.get(heartbeat_key("m", "v1")))
+    assert hb["phase"] == "workers_exited"  # failed restart isn't falsely reported as running
+
+
 async def test_shutdown_command_exits():
     store, docker = FakeObjectStore(), FakeDocker()
     agent = _agent(store, docker)

@@ -38,15 +38,15 @@ class Launcher:
         """Start all replicas sequentially, then supervise. Returns the unit exit code (0 = clean
         drain of every replica; nonzero = a replica crashed and the rest were torn down)."""
         procs: list = []
-        for i in range(self._instances):
-            proc = await self._spawn(i)
-            procs.append(proc)
-            try:
+        try:
+            for i in range(self._instances):
+                proc = await self._spawn(i)
+                procs.append(proc)
                 await self._wait_ready(proc, i)  # blocks until child i loaded; raises if it dies first
-            except Exception:
-                for p in procs:
-                    _terminate(p)
-                raise
+        except Exception:
+            for p in procs:  # spawn or readiness failed mid-start -> tear down whatever we started
+                _terminate(p)
+            raise
 
         pending = {asyncio.create_task(p.wait()) for p in procs}
         while pending:

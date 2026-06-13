@@ -85,6 +85,31 @@ async def test_handle_error_nacks_and_does_not_raise():
     assert "https://s3/r" not in broker.puts
 
 
+async def test_put_failure_nacks_once_and_does_not_ack():
+    item = {"lease_id": "L4", "body_url": "https://s3/b", "result_url": "https://s3/r"}
+
+    class PutFails(FakeBroker):
+        async def put(self, url, data):
+            raise RuntimeError("put boom")  # 2xx response, but storing the result fails
+
+    broker = PutFails([item], {"https://s3/b": b"x"})
+    await _adapter(broker, _server(lambda r: httpx.Response(200, content=b"y"))).run()
+    assert broker.nacked == ["L4"] and broker.acked == []  # nacked exactly once, never acked
+
+
+async def test_failing_nack_is_suppressed_and_not_retried():
+    item = {"lease_id": "L5", "body_url": "https://s3/b", "result_url": "https://s3/r"}
+
+    class NackFails(FakeBroker):
+        async def nack(self, lease_id):
+            self.nacked.append(lease_id)
+            raise RuntimeError("nack boom")  # the nack itself fails
+
+    broker = NackFails([item], {"https://s3/b": b"x"})
+    await _adapter(broker, _server(lambda r: httpx.Response(500))).run()  # must not raise or double-nack
+    assert broker.nacked == ["L5"]  # attempted once; the failure is suppressed (no second nack)
+
+
 async def test_wait_ready_polls_until_healthy():
     calls = {"n": 0}
 

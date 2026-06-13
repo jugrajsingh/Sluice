@@ -66,32 +66,34 @@ class VmAgent:
         _rc, out = await self._run_cmd(["docker", "ps", "-q", "--filter", f"name={name}"])
         return len([line for line in out.splitlines() if line.strip()])
 
+    async def _run_container(
+        self, name: str, env: dict[str, str], *, gpus: bool, host_net: bool, image_cmd: list[str]
+    ) -> None:
+        # Clear any stale container of this name first (e.g. a crashed/stopped one left after a
+        # warm restart) so `docker run --name` doesn't collide.
+        await self._run_cmd(["docker", "rm", "-f", name])
+        await self._run_cmd(self._docker_run(name, env, gpus=gpus, host_net=host_net, image_cmd=image_cmd))
+
     async def start_workers(self) -> None:
         if self._worker_type == "sidecar":
             if await self._count("sluice-server") == 0:
                 # the model server owns the GPU and runs its own entrypoint; it holds NO broker creds
                 server_env = {k: v for k, v in self._env.items() if not k.startswith("WORKER__BROKER")}
-                await self._run_cmd(
-                    self._docker_run("sluice-server", server_env, gpus=True, host_net=True, image_cmd=self._args)
-                )
-            await self._run_cmd(
-                self._docker_run(
-                    "sluice-worker",
-                    self._env,
-                    gpus=False,
-                    host_net=True,
-                    image_cmd=["python", "-m", "sluice_worker.adapter"],
-                )
+                await self._run_container("sluice-server", server_env, gpus=True, host_net=True, image_cmd=self._args)
+            await self._run_container(
+                "sluice-worker",
+                self._env,
+                gpus=False,
+                host_net=True,
+                image_cmd=["python", "-m", "sluice_worker.adapter"],
             )
         else:  # handler: one launcher container packs N replicas (sequential start) on the GPU
-            await self._run_cmd(
-                self._docker_run(
-                    "sluice-worker",
-                    self._env,
-                    gpus=True,
-                    host_net=False,
-                    image_cmd=["python", "-m", "sluice_worker.launch", "--instances", str(self._instances)],
-                )
+            await self._run_container(
+                "sluice-worker",
+                self._env,
+                gpus=True,
+                host_net=False,
+                image_cmd=["python", "-m", "sluice_worker.launch", "--instances", str(self._instances)],
             )
         self._idle_since = None
 
@@ -129,7 +131,8 @@ class VmAgent:
             return True
         if command == "start_workers":
             await self.start_workers()
-            await self._heartbeat("running", self._instances)
+            restarted = await self._running()  # confirm the container actually came up (no name collision/failure)
+            await self._heartbeat("running" if restarted else "workers_exited", self._instances if restarted else 0)
             return True
         if self._idle_since is None:
             self._idle_since = now

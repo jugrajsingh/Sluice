@@ -59,22 +59,30 @@ class Adapter:
             await asyncio.sleep(self._poll_s)
         raise TimeoutError(f"model server not ready within {self._ready_timeout_s}s")
 
+    async def _safe_nack(self, lease_id: str) -> None:
+        with contextlib.suppress(Exception):  # best effort; a lost nack just lets the lease lapse
+            await self._broker.nack(lease_id)
+
     async def _handle(self, item: dict) -> None:
-        # The dispatch engine never sees exceptions from here (that would leak the lease); on any
-        # failure we nack so the lease is retried.
+        # The dispatch engine never sees exceptions from here (that would leak the lease); each path
+        # nacks at most once (a failing nack must not trigger a second).
+        lease_id = item["lease_id"]
         try:
             body = await self._broker.get(item["body_url"])
             resp = await self._server.request(
                 self._method, self._request_path, content=body, headers={"content-type": self._content_type}
             )
-            if 200 <= resp.status_code < 300:
-                await self._broker.put(item["result_url"], resp.content)
-                await self._broker.ack(item["lease_id"])
-            else:
-                await self._broker.nack(item["lease_id"])
         except Exception:
-            with contextlib.suppress(Exception):  # best effort; a lost nack just lets the lease lapse
-                await self._broker.nack(item["lease_id"])
+            await self._safe_nack(lease_id)
+            return
+        if 200 <= resp.status_code < 300:
+            try:
+                await self._broker.put(item["result_url"], resp.content)
+                await self._broker.ack(lease_id)
+            except Exception:
+                await self._safe_nack(lease_id)
+        else:
+            await self._safe_nack(lease_id)
 
     def request_stop(self) -> None:
         self._stop = True

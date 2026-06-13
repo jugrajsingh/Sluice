@@ -102,6 +102,28 @@ async def test_child_crash_terminates_siblings_and_propagates_code():
     assert procs[0].terminated and procs[2].terminated  # siblings torn down
 
 
+async def test_spawn_failure_mid_loop_tears_down_already_started():
+    procs: list[P] = []
+
+    async def spawn(i):
+        if i == 1:
+            raise RuntimeError("spawn boom")  # the spawn itself fails for the 2nd replica
+        p = P()
+        procs.append(p)
+        return p
+
+    async def wait_ready(_proc, _i):
+        return None
+
+    task = asyncio.create_task(Launcher(instances=3, spawn=spawn, wait_ready=wait_ready).run())
+    try:
+        await task
+        raise AssertionError("expected the spawn failure to propagate")
+    except RuntimeError:
+        pass
+    assert len(procs) == 1 and procs[0].terminated  # the one started child was torn down
+
+
 async def test_child_death_before_ready_tears_down_and_raises():
     procs: list[P] = []
 
