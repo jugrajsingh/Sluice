@@ -1,11 +1,16 @@
+import pytest
+from pydantic import ValidationError
 from sluice_core.models import (
     AppSpec,
     AppStatus,
+    CandidateOverrides,
     K8sPlacementSpec,
     KubernetesCandidate,
+    ServerSpec,
     Toleration,
     VmCandidate,
     VmPlacementSpec,
+    WorkerSpec,
     WorkerState,
     WorkerStatus,
 )
@@ -69,3 +74,37 @@ def test_appstatus_defaults():
     s = AppStatus()
     assert s.phase == "Ready" and s.reason is None and s.candidate is None
     assert s.workers == {} and s.queue.visible == 0
+
+
+def test_worker_defaults_to_in_process_handler():
+    app = AppSpec(name="m", image="i")
+    assert app.worker.type == "handler" and app.worker.instances == 1
+    assert app.worker.args == [] and app.worker.server is None
+
+
+def test_sidecar_worker_requires_server_config():
+    with pytest.raises(ValidationError):
+        WorkerSpec(type="sidecar")  # no server
+    w = WorkerSpec(type="sidecar", instances=3, server=ServerSpec(port=8080, request_path="/v1/segment"))
+    assert w.server.port == 8080 and w.server.request_path == "/v1/segment"
+    assert w.server.method == "POST" and w.server.health_path == "/healthz" and w.server.ready_timeout_s == 600
+
+
+def test_server_spec_aliases_round_trip():
+    s = ServerSpec.model_validate(
+        {"port": 9000, "requestPath": "/infer", "contentType": "application/json", "readyTimeoutS": 300}
+    )
+    assert s.request_path == "/infer" and s.content_type == "application/json" and s.ready_timeout_s == 300
+    assert s.model_dump(by_alias=True)["requestPath"] == "/infer"
+
+
+def test_candidate_overrides_optional_and_partial():
+    cand = KubernetesCandidate(
+        provider="in-cluster",
+        spec=K8sPlacementSpec(pricing="spot"),
+        overrides=CandidateOverrides(instances=6, env={"SERVER__WORKERS": "6"}),
+    )
+    assert cand.overrides.instances == 6 and cand.overrides.env == {"SERVER__WORKERS": "6"}
+    assert cand.overrides.image is None and cand.overrides.args is None
+    # default: no overrides
+    assert VmCandidate(provider="gce", spec=VmPlacementSpec(machine_type="g2")).overrides is None

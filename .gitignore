@@ -1,6 +1,8 @@
 .env
 # brainstorming / planning scratch — finalized decisions live in docs/adr + docs/
 docs/superpowers/
+# private reference example wrapping a proprietary model server (BYO)
+examples/samserve/
 .venv/
 __pycache__/
 *.pyc

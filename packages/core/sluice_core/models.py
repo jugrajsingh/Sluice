@@ -82,9 +82,59 @@ class VmPlacementSpec(BaseModel):
     accelerator_type: str = Field("", alias="acceleratorType")
     boot_image: str = Field("", alias="bootImage")
     regions: list[str] = Field(default_factory=list)
+    # Deprecated: packing moves to worker.instances + per-candidate override; removed with the
+    # unit-counting change (plan Task 8). Kept until then so the VM math/tests stay green.
     workers_per_vm: int = Field(1, alias="workersPerVm")
     linger_seconds: int = Field(300, alias="lingerSeconds")
     max_vms: int = Field(5, alias="maxVms")
+
+
+class ServerSpec(BaseModel):
+    """How the sidecar adapter talks to the model server packed in the same unit.
+
+    The adapter is model-agnostic: the queue body is POSTed verbatim and the response is stored
+    verbatim. Only these knobs configure it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+    port: int = 8080
+    request_path: str = Field("/", alias="requestPath")
+    method: str = "POST"
+    content_type: str = Field("application/octet-stream", alias="contentType")
+    health_path: str = Field("/healthz", alias="healthPath")
+    ready_timeout_s: int = Field(600, alias="readyTimeoutS")  # cold-start budget before the unit is failed
+    concurrency: int = 0  # 0 => match WorkerSpec.instances; else explicit in-flight cap
+
+
+class WorkerSpec(BaseModel):
+    """Worker archetype + packing for an app.
+
+    - `handler`: the model runs in-process (`BaseHandler`); `instances` worker.run processes are
+      started **sequentially** in one unit, each leasing independently.
+    - `sidecar`: an HTTP model server (packing itself to `instances`) is fed by the Sluice adapter.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+    type: Literal["handler", "sidecar"] = "handler"
+    instances: int = 1
+    args: list[str] = Field(default_factory=list)
+    server: ServerSpec | None = None
+
+    @model_validator(mode="after")
+    def _sidecar_needs_server(self) -> WorkerSpec:
+        if self.type == "sidecar" and self.server is None:
+            raise ValueError("worker.type 'sidecar' requires a server config")
+        return self
+
+
+class CandidateOverrides(BaseModel):
+    """Per-candidate overrides merged over the app-level values (for heterogeneous GPUs)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    image: str | None = None
+    env: dict[str, str] | None = None
+    args: list[str] | None = None
+    instances: int | None = None
 
 
 class KubernetesCandidate(BaseModel):
@@ -98,6 +148,7 @@ class KubernetesCandidate(BaseModel):
     type: Literal["kubernetes"] = "kubernetes"
     provider: str = "in-cluster"
     spec: K8sPlacementSpec = Field(default_factory=K8sPlacementSpec)
+    overrides: CandidateOverrides | None = None
 
 
 class VmCandidate(BaseModel):
@@ -107,6 +158,7 @@ class VmCandidate(BaseModel):
     type: Literal["vm"] = "vm"
     provider: str = "gce"
     spec: VmPlacementSpec = Field(default_factory=VmPlacementSpec)
+    overrides: CandidateOverrides | None = None
 
 
 # Discriminated on `type`; the placement list's order IS the priority (per-app).
@@ -138,6 +190,7 @@ class AppSpec(BaseModel):
     storage_prefix: str = Field("", alias="storagePrefix")
     resources: ResourcesSpec = Field(default_factory=ResourcesSpec)
     scaling: ScalingSpec = Field(default_factory=ScalingSpec)
+    worker: WorkerSpec = Field(default_factory=WorkerSpec)
     placement: list[PlacementCandidate] = Field(default_factory=_default_placement)
 
     @model_validator(mode="after")
