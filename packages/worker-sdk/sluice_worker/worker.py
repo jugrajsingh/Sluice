@@ -8,6 +8,12 @@ from .config import WorkerSettings
 from .handler import BaseHandler
 
 
+def _write_marker(path: str) -> None:
+    from pathlib import Path
+
+    Path(path).write_text("ready")
+
+
 class Worker:
     """Leases work from the gateway broker, runs the handler, writes results via
     signed URLs, and acks — holding only a short-lived JWT (no queue/store creds)."""
@@ -43,6 +49,8 @@ class Worker:
     async def run(self) -> None:
         self._install_signals()
         await self._handler.load()
+        if self._cfg.ready_marker:  # signal the launcher this replica has loaded (sequential start)
+            await asyncio.to_thread(_write_marker, self._cfg.ready_marker)
         hb = asyncio.create_task(self._heartbeat())
         cfg = self._cfg
         blank = 0

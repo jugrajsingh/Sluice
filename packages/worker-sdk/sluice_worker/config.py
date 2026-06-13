@@ -11,6 +11,7 @@ class WorkerSettings(BaseSettings):
     max_jobs: int = 5000
     max_blank_retries: int = 3
     heartbeat_s: int = 50
+    ready_marker: str = ""  # if set, the worker touches this file after load() (launcher gating)
     # Sidecar adapter (WORKER__CONCURRENCY, WORKER__SERVER_PORT, WORKER__SERVER_REQUEST_PATH, ...).
     concurrency: int = 1
     server_port: int = 8080
