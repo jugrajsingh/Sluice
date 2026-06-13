@@ -2,17 +2,38 @@ image:
   registry: ghcr.io/jugrajsingh
   tag: "0.1.0"
 queue:
-  backend: redis            # redis | sqs | memory
-  options: {}               # backend-specific, passed as QUEUE__OPTIONS JSON (e.g. url for redis)
+  backend: redis            # redis | sqs   (shared + persistent only — see ADR-005)
+  options: {}               # QUEUE__OPTIONS JSON, e.g. { url: redis://sluice-redis:6379 } for bundled Redis
 object_store:
-  backend: s3               # s3 | gcs | minio | local
-  options: {}               # passed as OBJECT_STORE__OPTIONS JSON (e.g. bucket, endpoint_url)
+  backend: s3               # s3 | gcs | minio   (shared + persistent only — see ADR-005)
+  options: {}               # OBJECT_STORE__OPTIONS JSON, e.g. { bucket: ..., endpoint_url: http://sluice-minio:9000 }
 backendSecret: ""           # optional Secret with backend credentials (AWS_*, ...) for all components
 broker:
   signingKeySecret: ""       # Secret with key 'signing-key' (HS256). Gateway verifies, autoscaler mints worker JWTs.
-  url: http://sluice-gateway # in-cluster broker URL the autoscaler stamps into worker pods
+  # In-cluster broker URL the autoscaler stamps into worker pods. MUST be an externally-reachable
+  # HTTPS endpoint (ingress/LB) when any external cluster or burst VM is used — remote workers
+  # resolve this, not the in-cluster Service DNS.
+  url: http://sluice-gateway
+
+# External clusters this control plane orchestrates workers in. Each entry mounts a kubeconfig
+# Secret (key: kubeconfig) and is exposed to the autoscaler as AUTOSCALER__CLUSTERS. Apps target a
+# cluster by name in a placement candidate's `provider` (the implicit `in-cluster` is always present).
+clusters: []
+  # - name: gke-east
+  #   kubeconfigSecret: sluice-kubeconfig-gke-east   # Secret with key 'kubeconfig'
+  #   namespace: default                             # worker namespace in that cluster (optional)
+
+# Bundled dev backends for a self-contained / GPU-less control cluster. Both render offline.
 redis:
-  enabled: true             # bundled dev Redis; disable to use managed (see Chart.yaml)
+  enabled: true             # bundled dev Redis (StatefulSet + Service sluice-redis:6379); disable for managed
+  image: redis:7-alpine
+  storage: 1Gi
+minio:
+  enabled: false            # bundled dev MinIO (S3-compatible; Service sluice-minio:9000)
+  image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+  storage: 10Gi
+  credentialsSecret: ""     # Secret with keys 'root-user' and 'root-password' (required when enabled)
+
 gateway: { replicas: 2, tSyncSeconds: 3 }
 console: { replicas: 1 }
 autoscaler:

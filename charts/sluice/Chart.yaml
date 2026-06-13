@@ -4,9 +4,6 @@ description: Queue-driven, scale-from-zero GPU inference platform
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-# Bundled dev Redis/MinIO are opt-in. Add them as dependencies and run
-# `helm dependency update` to vendor them, e.g.:
-#   dependencies:
-#     - { name: redis, version: "~19", repository: "https://charts.bitnami.com/bitnami",
-#         condition: redis.enabled }
-# Left out of the default Chart so `helm template`/`lint` render fully offline.
+# Bundled dev Redis/MinIO are hand-written templates (templates/redis.yaml, templates/minio.yaml)
+# gated on redis.enabled / minio.enabled, so the whole chart renders offline with no external
+# subchart dependency. Disable them and point queue/object_store at managed services in production.

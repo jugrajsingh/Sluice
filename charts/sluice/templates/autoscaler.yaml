@@ -57,6 +57,13 @@ spec:
             - name: AUTOSCALER__SIGNING_KEY
               valueFrom: { secretKeyRef: { name: "{{ .Values.broker.signingKeySecret }}", key: signing-key } }
             {{- end }}
+            {{- if .Values.clusters }}
+            {{- $entries := list }}
+            {{- range .Values.clusters }}
+            {{- $entries = append $entries (dict "name" .name "kubeconfig_path" (printf "/var/secrets/clusters/%s/kubeconfig" .name) "namespace" (.namespace | default $.Release.Namespace)) }}
+            {{- end }}
+            - { name: AUTOSCALER__CLUSTERS, value: {{ toJson $entries | quote }} }
+            {{- end }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           {{- if or .Values.backendSecret .Values.autoscaler.cloud.awsCredentialsSecret }}
@@ -68,14 +75,25 @@ spec:
             - secretRef: { name: "{{ .Values.autoscaler.cloud.awsCredentialsSecret }}" }
             {{- end }}
           {{- end }}
-          {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
+          {{- if or .Values.autoscaler.cloud.gcpCredentialsSecret .Values.clusters }}
           volumeMounts:
+            {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
             - { name: gcp-creds, mountPath: /var/secrets/gcp, readOnly: true }
+            {{- end }}
+            {{- range .Values.clusters }}
+            - { name: "cluster-{{ .name }}", mountPath: "/var/secrets/clusters/{{ .name }}", readOnly: true }
+            {{- end }}
           {{- end }}
           ports: [ { containerPort: 8081 } ]
           livenessProbe: { httpGet: { path: /healthz, port: 8081 }, initialDelaySeconds: 10 }
-      {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
+      {{- if or .Values.autoscaler.cloud.gcpCredentialsSecret .Values.clusters }}
       volumes:
+        {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
         - name: gcp-creds
           secret: { secretName: "{{ .Values.autoscaler.cloud.gcpCredentialsSecret }}" }
+        {{- end }}
+        {{- range .Values.clusters }}
+        - name: "cluster-{{ .name }}"
+          secret: { secretName: "{{ .kubeconfigSecret }}" }
+        {{- end }}
       {{- end }}

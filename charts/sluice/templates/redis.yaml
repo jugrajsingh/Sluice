@@ -1,0 +1,35 @@
+{{- if .Values.redis.enabled }}
+# Bundled dev Redis for a self-contained control cluster. Single replica, no auth — point the
+# queue at it with queue.options: { url: redis://sluice-redis:6379 }. For production use a managed
+# Redis and set redis.enabled=false.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: sluice-redis, labels: { app.kubernetes.io/name: sluice-redis } }
+spec:
+  serviceName: sluice-redis
+  replicas: 1
+  selector: { matchLabels: { app.kubernetes.io/name: sluice-redis } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: sluice-redis }
+    spec:
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image }}"
+          args: ["--appendonly", "yes"]
+          ports: [ { containerPort: 6379 } ]
+          volumeMounts: [ { name: data, mountPath: /data } ]
+          livenessProbe: { tcpSocket: { port: 6379 }, initialDelaySeconds: 5 }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: "{{ .Values.redis.storage }}" } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: sluice-redis }
+spec:
+  selector: { app.kubernetes.io/name: sluice-redis }
+  ports: [ { port: 6379, targetPort: 6379 } ]
+{{- end }}
