@@ -1,3 +1,4 @@
+{{- $caps := list "storage" "queue" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: sluice-gateway, labels: { app.kubernetes.io/name: sluice-gateway } }
@@ -9,6 +10,7 @@ spec:
       labels: { app.kubernetes.io/name: sluice-gateway }
       annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8080", prometheus.io/path: /metrics }
     spec:
+{{- include "sluice.imagePullSecrets" . }}
       containers:
         - name: gateway
           image: "{{ .Values.image.registry }}/sluice-gateway:{{ .Values.image.tag }}"
@@ -20,10 +22,21 @@ spec:
             - name: GATEWAY__SIGNING_KEY
               valueFrom: { secretKeyRef: { name: "{{ .Values.broker.signingKeySecret }}", key: signing-key } }
             {{- end }}
-{{ include "sluice.backendSecretEnvFrom" . }}
+{{- include "sluice.credFileEnv" (dict "root" $ "caps" $caps) }}
+{{- include "sluice.credEnvFrom" (dict "root" $ "caps" $caps) }}
           ports: [ { containerPort: 8080 } ]
           livenessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
           readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
+          {{- $mounts := include "sluice.credVolumeMounts" (dict "root" $ "caps" $caps) }}
+          {{- if trim $mounts }}
+          volumeMounts:
+{{- $mounts }}
+          {{- end }}
+      {{- $vols := include "sluice.credVolumes" (dict "root" $ "caps" $caps) }}
+      {{- if trim $vols }}
+      volumes:
+{{- $vols }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

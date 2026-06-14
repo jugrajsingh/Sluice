@@ -7,7 +7,33 @@ queue:
 object_store:
   backend: s3               # s3 | gcs | minio   (shared + persistent only — see ADR-005)
   options: {}               # OBJECT_STORE__OPTIONS JSON, e.g. { bucket: ..., endpoint_url: http://sluice-minio:9000 }
-backendSecret: ""           # optional Secret with backend credentials (AWS_*, ...) for all components
+
+# Capability-scoped credential secrets — externally provisioned & mounted (NEVER Workload Identity).
+# Each is mounted only on the components that use that capability, so you can mix clouds: S3 storage
+# + Redis queue + GCE VMs, or GCS + SQS + EC2, etc. Point several at the SAME Secret when one identity
+# has all the access (last-wins is harmless — same creds); use distinct Secrets to separate them.
+#   envFromSecret: a Secret whose keys become env  (S3/SQS/EC2: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY;
+#                  Redis: a key QUEUE__OPTIONS / CACHE__OPTIONS = {"url":"redis://:pw@host:6379/0"})
+#   file:          a Secret mounted at /var/secrets/cred-<cap>/<key>, with `env` set to that path
+#                  (GCS service-account JSON via GOOGLE_APPLICATION_CREDENTIALS)
+credentials:
+  storage:                  # object store (app-registry + objectstore-cache inherit it) -> gateway, console, autoscaler
+    envFromSecret: ""       # S3/MinIO: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }   # GCS JSON key
+  queue:                    # redis / sqs -> gateway, console, autoscaler
+    envFromSecret: ""       # SQS: AWS_*  |  Redis: key QUEUE__OPTIONS={"url":"redis://:pw@..."}
+    file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }
+  cache:                    # redis (separate) -> autoscaler. Default object-store cache inherits `storage`.
+    envFromSecret: ""       # Redis: key CACHE__OPTIONS={"url":"redis://:pw@..."}
+    file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }
+  compute:                  # VM burst (GCE/EC2) -> autoscaler. Inherits `storage` creds ambiently if same account.
+    envFromSecret: ""       # EC2: AWS_*
+    file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }   # GCE JSON key
+
+# Pull secrets for the Sluice images. Empty for public images (ghcr.io/jugrajsingh/*); set when you
+# mirror them into a private registry, e.g. [{ name: ghcr-pull }].
+imagePullSecrets: []
+
 broker:
   signingKeySecret: ""       # Secret with key 'signing-key' (HS256). Gateway verifies, autoscaler mints worker JWTs.
   # In-cluster broker URL the autoscaler stamps into worker pods. MUST be an externally-reachable
@@ -39,9 +65,6 @@ console: { replicas: 1 }
 autoscaler:
   replicas: 1
   leaderElection: true      # >1 safe once leader election is on
-  cloud:
-    gcpCredentialsSecret: ""    # secret with key credentials.json -> GOOGLE_APPLICATION_CREDENTIALS
-    awsCredentialsSecret: ""    # secret with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
   placement:
     prober: ""                  # gce | ec2 | "" (no VM probing)
     stateBackend: {}            # e.g. { type: gcs, bucket: my-sluice-state } -> PLACEMENT__TF_STATE_BACKEND

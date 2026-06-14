@@ -21,6 +21,7 @@ Numbered in the order recorded; the **Date** field in each ADR is the decision d
 | [005](005-shared-persistent-backends-only.md) | Deployable backends are shared and persistent only | 2026-06-13 | Accepted |
 | [006](006-multi-cluster-ordered-placement.md) | Multi-cluster, ordered, node-aware placement | 2026-06-13 | Accepted |
 | [007](007-worker-archetypes-and-packing.md) | Worker archetypes (handler / sidecar) and GPU packing | 2026-06-14 | Accepted |
+| [008](008-capability-scoped-credentials.md) | Capability-scoped credential secrets (no Workload Identity) | 2026-06-15 | Accepted |
 
 ## Template
 

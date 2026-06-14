@@ -1,3 +1,4 @@
+{{- $caps := list "storage" "queue" "cache" "compute" -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: sluice-autoscaler }
@@ -34,6 +35,7 @@ spec:
       annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8081", prometheus.io/path: /metrics }
     spec:
       serviceAccountName: sluice-autoscaler
+{{- include "sluice.imagePullSecrets" . }}
       containers:
         - name: autoscaler
           image: "{{ .Values.image.registry }}/sluice-autoscaler:{{ .Values.image.tag }}"
@@ -49,9 +51,6 @@ spec:
             {{- if .Values.autoscaler.placement.stateBackend }}
             - { name: PLACEMENT__TF_STATE_BACKEND, value: {{ .Values.autoscaler.placement.stateBackend | toJson | quote }} }
             {{- end }}
-            {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
-            - { name: GOOGLE_APPLICATION_CREDENTIALS, value: /var/secrets/gcp/credentials.json }
-            {{- end }}
             {{- if .Values.broker.signingKeySecret }}
             - { name: AUTOSCALER__BROKER_URL, value: "{{ .Values.broker.url }}" }
             - name: AUTOSCALER__SIGNING_KEY
@@ -66,32 +65,22 @@ spec:
             {{- end }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
-          {{- if or .Values.backendSecret .Values.autoscaler.cloud.awsCredentialsSecret }}
-          envFrom:
-            {{- if .Values.backendSecret }}
-            - secretRef: { name: "{{ .Values.backendSecret }}" }
-            {{- end }}
-            {{- if .Values.autoscaler.cloud.awsCredentialsSecret }}
-            - secretRef: { name: "{{ .Values.autoscaler.cloud.awsCredentialsSecret }}" }
-            {{- end }}
-          {{- end }}
-          {{- if or .Values.autoscaler.cloud.gcpCredentialsSecret .Values.clusters }}
+{{- include "sluice.credFileEnv" (dict "root" $ "caps" $caps) }}
+{{- include "sluice.credEnvFrom" (dict "root" $ "caps" $caps) }}
+          ports: [ { containerPort: 8081 } ]
+          livenessProbe: { httpGet: { path: /healthz, port: 8081 }, initialDelaySeconds: 10 }
+          {{- $cmounts := include "sluice.credVolumeMounts" (dict "root" $ "caps" $caps) }}
+          {{- if or (trim $cmounts) .Values.clusters }}
           volumeMounts:
-            {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
-            - { name: gcp-creds, mountPath: /var/secrets/gcp, readOnly: true }
-            {{- end }}
+{{- $cmounts }}
             {{- range .Values.clusters }}
             - { name: "cluster-{{ .name }}", mountPath: "/var/secrets/clusters/{{ .name }}", readOnly: true }
             {{- end }}
           {{- end }}
-          ports: [ { containerPort: 8081 } ]
-          livenessProbe: { httpGet: { path: /healthz, port: 8081 }, initialDelaySeconds: 10 }
-      {{- if or .Values.autoscaler.cloud.gcpCredentialsSecret .Values.clusters }}
+      {{- $cvols := include "sluice.credVolumes" (dict "root" $ "caps" $caps) }}
+      {{- if or (trim $cvols) .Values.clusters }}
       volumes:
-        {{- if .Values.autoscaler.cloud.gcpCredentialsSecret }}
-        - name: gcp-creds
-          secret: { secretName: "{{ .Values.autoscaler.cloud.gcpCredentialsSecret }}" }
-        {{- end }}
+{{- $cvols }}
         {{- range .Values.clusters }}
         - name: "cluster-{{ .name }}"
           secret: { secretName: "{{ .kubeconfigSecret }}" }
