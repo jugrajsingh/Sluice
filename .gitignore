@@ -13,3 +13,7 @@ __pycache__/
 .ruff_cache/
 dist/
 .idea/
+# Local agent context / weekend handoff
+CLAUDE.local.md
+pending-commits.md
+test-results/

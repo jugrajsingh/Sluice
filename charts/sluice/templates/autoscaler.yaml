@@ -1,4 +1,4 @@
-{{- $caps := list "storage" "queue" "cache" "compute" -}}
+{{- $caps := list "storage" "state" "queue" "cache" "compute" -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: sluice-autoscaler }
@@ -39,6 +39,7 @@ spec:
       containers:
         - name: autoscaler
           image: "{{ .Values.image.registry }}/sluice-autoscaler:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "sluice_autoscaler.main"]
           env:
 {{ include "sluice.backendEnv" . | indent 12 }}
@@ -48,8 +49,11 @@ spec:
             {{- if .Values.autoscaler.placement.prober }}
             - { name: AUTOSCALER__PROBER, value: "{{ .Values.autoscaler.placement.prober }}" }
             {{- end }}
-            {{- if .Values.autoscaler.placement.stateBackend }}
-            - { name: PLACEMENT__TF_STATE_BACKEND, value: {{ .Values.autoscaler.placement.stateBackend | toJson | quote }} }
+            {{- if .Values.autoscaler.placement.workerBaseImage }}
+            - { name: PLACEMENT__WORKER_BASE_IMAGE, value: "{{ .Values.autoscaler.placement.workerBaseImage }}" }
+            {{- end }}
+            {{- if .Values.autoscaler.placement.providerDefaults }}
+            - { name: PLACEMENT__PROVIDER_DEFAULTS, value: {{ .Values.autoscaler.placement.providerDefaults | toJson | quote }} }
             {{- end }}
             {{- if .Values.broker.signingKeySecret }}
             - { name: AUTOSCALER__BROKER_URL, value: "{{ .Values.broker.url }}" }
