@@ -3,7 +3,7 @@
 Each child loads its own model copy into the shared GPU; starting them one at a time (waiting for
 each to signal "loaded" before the next) bounds peak host RAM to a single load — the parallel-load
 OOM that SamServe solves with a file lock, solved here by ordering. Each child leases independently;
-the unit counts as one worker-unit (tune messagesPerWorker for the packed throughput).
+the unit counts as one serving instance (tune messagesPerInstance for the packed throughput).
 
 If any replica crashes (nonzero exit), the launcher tears the rest down and exits nonzero so the
 pod/VM is restarted as a whole — a half-dead unit that silently serves at reduced capacity is worse.

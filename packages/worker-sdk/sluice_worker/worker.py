@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import signal
 
+from sluice_core.compression import gzip_bytes
+
 from .broker_client import TokenExpired
 from .config import WorkerSettings
 from .handler import BaseHandler
@@ -65,7 +67,8 @@ class Worker:
                 bodies = [await self._broker.get(it["body_url"]) for it in items]
                 outputs = await self._handler.predict(bodies)
                 for it, out in zip(items, outputs, strict=True):
-                    await self._broker.put(it["result_url"], out)
+                    # Always gzip the result — the stored key carries .gz (see InferenceObjects.result_key).
+                    await self._broker.put(it["result_url"], gzip_bytes(out))
                     await self._broker.ack(it["lease_id"])
                     self._inflight.discard(it["lease_id"])
                     self._processed += 1

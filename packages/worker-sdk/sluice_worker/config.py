@@ -20,4 +20,15 @@ class WorkerSettings(BaseSettings):
     server_content_type: str = "application/octet-stream"
     server_health_path: str = "/healthz"
     server_ready_timeout_s: int = 600
+    # --- batch lane (spec §3.3/§3.4; WORKER__BATCH_ENABLED, WORKER__PUT_CONCURRENCY, ...) ---
+    # When batch_enabled is true, the adapter constructs the dual-source batch lane in _amain:
+    # it leases {app}-batch files through the broker, fetches input via the presigned body_url,
+    # writes output via broker-minted presigned PUTs, and proxies status through the broker —
+    # no object-store credentials on the worker (ADR-002/008).
+    batch_enabled: bool = False
+    put_concurrency: int = 8  # shared in-flight model-call budget (semaphore)
+    batch_output_partition_size: int = 1000  # output records per flushed part
+    starve_grace_s: float = 420.0  # anti-starvation floor trigger (7 min)
+    batch_heartbeat_s: float = 30.0  # how often to extend the held batch file lease
+    infer_presence_poll_s: float = 15.0  # infer-presence refresh cadence
     model_config = SettingsConfigDict(env_prefix="WORKER__", env_nested_delimiter="__", extra="ignore")

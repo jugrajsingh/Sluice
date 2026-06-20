@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
+from sluice_core.models import Message
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 class TokenExpired(Exception):
@@ -42,6 +50,69 @@ class BrokerClient:
 
     async def nack(self, lease_id: str) -> None:
         await self._post("/internal/v1/nack", {"lease_id": lease_id})
+
+    # --- batch lane (spec §5 / C1) ----------------------------------------
+    # The {app}-batch queue is leased through the broker exactly like infer; one
+    # message == one JSONL file. batch_lease returns Message objects whose attributes
+    # carry job_id/file/body_url and whose ack_token is the broker lease_id, so the
+    # adapter's batch lane reads them directly.
+
+    async def batch_lease(self, max: int) -> list[Message]:
+        items = (await self._post("/internal/v1/batch/lease", {"max": max}))["items"]
+        return [
+            Message(
+                id=it["lease_id"],
+                body=b"",
+                ack_token=it["lease_id"],
+                attributes={"job_id": it["job_id"], "file": it["file"], "body_url": it["body_url"]},
+            )
+            for it in items
+        ]
+
+    async def batch_ack(self, lease_id: str) -> None:
+        await self._post("/internal/v1/batch/ack", {"lease_id": lease_id})
+
+    async def batch_extend(self, lease_ids: list[str]) -> None:
+        await self._post("/internal/v1/batch/extend", {"lease_ids": lease_ids})
+
+    async def batch_nack(self, lease_id: str) -> None:
+        await self._post("/internal/v1/batch/nack", {"lease_id": lease_id})
+
+    async def batch_output_url(self, job_id: str, file: str, start_offset: int) -> str:
+        """Presigned PUT for one output part, minted on demand right before the flush."""
+        body = {"job_id": job_id, "file": file, "start_offset": start_offset}
+        return (await self._post("/internal/v1/batch/output-url", body))["url"]
+
+    async def batch_status_get(self, job_id: str, file: str) -> dict | None:
+        resp = await self._http.get("/internal/v1/batch/status", params={"job_id": job_id, "file": file})
+        if resp.status_code == 401:
+            raise TokenExpired(resp.text)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["status"] if data.get("found") else None
+
+    async def batch_status_put(self, job_id: str, file: str, status: dict) -> None:
+        await self._post("/internal/v1/batch/status", {"job_id": job_id, "file": file, "status": status})
+
+    async def vm_heartbeat(self, vm_id: str, phase: str, workers: int) -> None:
+        await self._post("/internal/v1/vm/heartbeat", {"vm_id": vm_id, "phase": phase, "workers": workers})
+
+    async def vm_command(self, vm_id: str) -> str | None:
+        resp = await self._http.get("/internal/v1/vm/command", params={"vm_id": vm_id})
+        if resp.status_code == 401:
+            raise TokenExpired(resp.text)
+        resp.raise_for_status()
+        return resp.json().get("command")
+
+    async def put_file(self, url: str, path: str) -> None:
+        """Upload a spilled output-part file to a presigned PUT URL.
+
+        The file is read off-thread (never blocking the event loop) and sent with a known
+        Content-Length, so presigned SigV4 / GCS V4 validation succeeds (a chunked body can fail it).
+        """
+        data = await asyncio.to_thread(_read_bytes, path)
+        resp = await self._bare.put(url, content=data)
+        resp.raise_for_status()
 
     async def get(self, url: str) -> bytes:
         resp = await self._bare.get(url)

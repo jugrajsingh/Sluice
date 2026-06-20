@@ -1,3 +1,4 @@
+from sluice_core.compression import gunzip
 from sluice_worker.broker_client import TokenExpired
 from sluice_worker.config import WorkerSettings
 from sluice_worker.worker import Worker
@@ -53,7 +54,7 @@ def _settings(**kw):
 async def test_worker_leases_processes_acks_then_exits():
     br = FakeBroker()
     await Worker(broker=br, handler=EchoHandler(), settings=_settings()).run()
-    assert br.puts["p1"] == b"out"
+    assert gunzip(br.puts["p1"]) == b"out"  # results are always gzipped (.gz key)
     assert br.acked == ["1-0"]
     assert br.closed is True  # client closed on exit
 
