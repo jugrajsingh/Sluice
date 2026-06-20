@@ -96,14 +96,14 @@ Not on PyPI yet — install from the tagged source (the script builds the `sluic
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/jugrajsingh/Sluice/main/install.sh | bash
-#   SLUICE_VERSION=v0.2.1 …   pin a release      SLUICE_DIRECT=1 …   add the [direct] extra
+#   SLUICE_VERSION=v0.2.2 …   pin a release      SLUICE_DIRECT=1 …   add the [direct] extra
 ```
 
 Or build it yourself with uv (thin: typer + httpx + sluice-core, no cloud drivers):
 
 ```bash
-uv tool install "git+https://github.com/jugrajsingh/Sluice.git@v0.2.1#subdirectory=packages/cli" \
-  --with "git+https://github.com/jugrajsingh/Sluice.git@v0.2.1#subdirectory=packages/core"
+uv tool install "git+https://github.com/jugrajsingh/Sluice.git@v0.2.2#subdirectory=packages/cli" \
+  --with "git+https://github.com/jugrajsingh/Sluice.git@v0.2.2#subdirectory=packages/core"
 # once published:  pip install sluice-cli   ·   pip install 'sluice-cli[direct]'
 ```
 

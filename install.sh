@@ -4,7 +4,7 @@
 #   curl -LsSf https://raw.githubusercontent.com/jugrajsingh/Sluice/main/install.sh | bash
 #
 # Options (env vars):
-#   SLUICE_VERSION=v0.2.1   pin a release tag (default: the latest published release)
+#   SLUICE_VERSION=v0.2.2   pin a release tag (default: the latest published release)
 #   SLUICE_DIRECT=1         also install the [direct] extra (sluice-drivers) for `sluice apply --direct`
 #
 # Requires Python 3.13+. Uses uv (recommended) → pipx → pip --user, whichever is found.

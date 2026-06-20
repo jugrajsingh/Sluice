@@ -1943,7 +1943,7 @@ source = { virtual = "." }
 
 [[package]]
 name = "sluice-autoscaler"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/autoscaler" }
 dependencies = [
     { name = "aioboto3" },
@@ -1977,7 +1977,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "sluice-cli"
-version = "0.1.0"
+version = "0.2.2"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "httpx" },
@@ -2011,7 +2011,7 @@ provides-extras = ["direct", "test"]
 
 [[package]]
 name = "sluice-console"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/console" }
 dependencies = [
     { name = "fastapi" },
@@ -2045,7 +2045,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "sluice-core"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "pydantic" },
@@ -2071,7 +2071,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "sluice-drivers"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/drivers" }
 dependencies = [
     { name = "sluice-core" },
@@ -2113,7 +2113,7 @@ provides-extras = ["redis", "aws", "gcs", "test"]
 
 [[package]]
 name = "sluice-gateway"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/gateway" }
 dependencies = [
     { name = "fastapi" },
@@ -2145,7 +2145,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "sluice-worker"
-version = "0.0.0"
+version = "0.2.2"
 source = { editable = "packages/worker-sdk" }
 dependencies = [
     { name = "httpx" },

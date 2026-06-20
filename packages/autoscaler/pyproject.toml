@@ -1,6 +1,6 @@
 [project]
 name = "sluice-autoscaler"
-version = "0.0.0"
+version = "0.2.2"
 requires-python = ">=3.13"
 license = { text = "AGPL-3.0-or-later" }
 dependencies = ["sluice-core", "sluice-drivers[redis,aws,gcs]", "kubernetes-asyncio>=31", "prometheus-client>=0.20", "aiohttp>=3.9", "aioboto3>=13"]
