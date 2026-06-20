@@ -92,9 +92,19 @@ prerequisites) see **[docs/helm-deploy.md](docs/helm-deploy.md)**.
 A thin, kubectl-style client for the Admin API (the **console**, not the gateway). Install only
 the client — cloud drivers are an optional extra:
 
+Not on PyPI yet — install from the tagged source (the script builds the `sluice` command locally):
+
 ```bash
-pip install sluice-cli            # thin: typer + httpx + sluice-core, no cloud drivers
-pip install 'sluice-cli[direct]'  # adds the drivers for `apply --direct` (registry bootstrap)
+curl -LsSf https://raw.githubusercontent.com/jugrajsingh/Sluice/main/install.sh | bash
+#   SLUICE_VERSION=v0.2.1 …   pin a release      SLUICE_DIRECT=1 …   add the [direct] extra
+```
+
+Or build it yourself with uv (thin: typer + httpx + sluice-core, no cloud drivers):
+
+```bash
+uv tool install "git+https://github.com/jugrajsingh/Sluice.git@v0.2.1#subdirectory=packages/cli" \
+  --with "git+https://github.com/jugrajsingh/Sluice.git@v0.2.1#subdirectory=packages/core"
+# once published:  pip install sluice-cli   ·   pip install 'sluice-cli[direct]'
 ```
 
 Point it at a secured console and authenticate with an API key — by flag, env, or a saved context
