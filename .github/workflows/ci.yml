@@ -35,6 +35,23 @@ jobs:
       # helm is preinstalled on GitHub ubuntu runners — no setup action needed
       - run: helm lint charts/sluice
       - run: helm template sluice charts/sluice > /dev/null
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - infra/terraform/modules/sluice-vm-gce
+          - infra/terraform/modules/sluice-vm-ec2
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+        working-directory: ${{ matrix.module }}
+      - name: terraform validate
+        run: terraform validate
+        working-directory: ${{ matrix.module }}
   gitleaks:
     runs-on: ubuntu-latest
     steps:

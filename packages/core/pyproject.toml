@@ -2,6 +2,7 @@
 name = "sluice-core"
 version = "0.0.0"
 requires-python = ">=3.13"
+license = { text = "AGPL-3.0-or-later" }
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings[yaml]>=2.3",
