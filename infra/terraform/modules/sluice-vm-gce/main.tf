@@ -13,14 +13,19 @@ resource "google_compute_instance" "worker" {
   }
 
   scheduling {
-    provisioning_model          = var.spot ? "SPOT" : "STANDARD"
-    preemptible                 = var.spot
-    automatic_restart           = false
-    on_host_maintenance         = "TERMINATE"
-    instance_termination_action = var.spot ? "STOP" : null
+    provisioning_model  = var.spot ? "SPOT" : "STANDARD"
+    preemptible         = var.spot
+    automatic_restart   = false
+    on_host_maintenance = "TERMINATE"
+    # Spot preemption DELETES the instance (stateless lifecycle, ADR-012) so its disk is freed and no
+    # STOPPED-but-billing instance lingers. (STOP — the old value — left the boot disk billing forever.)
+    instance_termination_action = var.spot ? "DELETE" : null
   }
 
   boot_disk {
+    # Explicit: the boot disk is deleted with the instance (the default, pinned so a STOPPED/deleted
+    # instance never orphans its disk). auto_delete fires on instance DELETE, never on STOP.
+    auto_delete = true
     initialize_params {
       image = var.boot_image
       size  = var.disk_gb
