@@ -2157,6 +2157,7 @@ dependencies = [
 test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "sluice-gateway" },
 ]
 
 [package.metadata]
@@ -2166,6 +2167,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
     { name = "sluice-core", editable = "packages/core" },
     { name = "sluice-drivers", extras = ["redis", "aws", "gcs"], editable = "packages/drivers" },
+    { name = "sluice-gateway", marker = "extra == 'test'", editable = "packages/gateway" },
 ]
 provides-extras = ["test"]
 
