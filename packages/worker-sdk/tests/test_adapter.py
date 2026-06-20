@@ -59,10 +59,49 @@ async def test_forwards_body_and_writes_response_verbatim():
         seen["ct"] = request.headers.get("content-type")
         return httpx.Response(200, content=b'{"results":[]}')
 
+    from sluice_core.compression import gunzip
+
     await _adapter(broker, _server(handler)).run()
     assert seen["path"] == "/v1/segment" and seen["body"] == b'{"inputs":[]}' and seen["ct"] == "application/json"
-    assert broker.puts["https://s3/result"] == b'{"results":[]}'  # response stored verbatim
+    # Results are ALWAYS gzipped (both archetypes), so the stored body round-trips via gunzip.
+    assert gunzip(broker.puts["https://s3/result"]) == b'{"results":[]}'
     assert broker.acked == ["L1"] and broker.nacked == []
+
+
+async def test_tiny_result_stored_gzipped_so_gz_key_is_honest():
+    """A tiny body is STILL gzipped (gzip_bytes — always), even though gzip framing makes it larger,
+    so the always-`.gz` storage key (inference_objects.result_key) is never a lie: a bucket reader or a
+    batch presigned-download client can gunzip by suffix without out-of-band metadata (commit 6b677e1).
+    """
+    from sluice_core.compression import gunzip, is_gzip
+
+    item = {"lease_id": "L8", "body_url": "https://s3/b8", "result_url": "https://s3/r8"}
+    tiny = b'{"ok":1}'
+    broker = FakeBroker([item], {"https://s3/b8": b"{}"})
+
+    await _adapter(broker, _server(lambda r: httpx.Response(200, content=tiny))).run()
+
+    stored = broker.puts["https://s3/r8"]
+    assert is_gzip(stored), "even a tiny body is gzipped so the .gz key is honest"
+    assert gunzip(stored) == tiny  # round-trips to the verbatim model response
+    assert broker.acked == ["L8"] and broker.nacked == []
+
+
+async def test_large_result_stored_gzipped_and_round_trips():
+    from sluice_core.compression import gunzip, is_gzip
+
+    item = {"lease_id": "L9", "body_url": "https://s3/b", "result_url": "https://s3/r"}
+    broker = FakeBroker([item], {"https://s3/b": b"{}"})
+    big = b'{"mask": [' + b"false, " * 50_000 + b"]}"  # the real-world mask-JSON shape: highly redundant
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=big)
+
+    await _adapter(broker, _server(handler)).run()
+    stored = broker.puts["https://s3/r"]
+    assert is_gzip(stored) and len(stored) < len(big)  # stored compressed (~350x for mask JSON)
+    assert gunzip(stored) == big  # losslessly -> the verbatim model response is recoverable
+    assert broker.acked == ["L9"] and broker.nacked == []
 
 
 async def test_nacks_on_server_5xx_without_writing_result():

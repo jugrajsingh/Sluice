@@ -62,7 +62,7 @@ def test_ack_calls_queue():
     q = FakeQueue()
     c = _client(queue=q)
     assert c.post("/internal/v1/ack", json={"lease_id": "1-0"}, headers=_auth()).status_code == 200
-    assert q.acked == [("seg", "1-0")]
+    assert q.acked == [("seg-infer", "1-0")]  # infer lane queue
 
 
 def test_extend_calls_queue():
