@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -55,20 +56,28 @@ class TerraformProvider:
         binary: str = "terraform",
         module_dir: str,
         work_root: str,
-        state_backend: dict[str, str],
         provider_defaults: dict[str, str],
         broker_url: str,
         signing_key: str,
+        worker_base_image: str = "",
         prober=None,
+        keep_workdir: bool = False,
     ) -> None:
         self._tf = binary
         self._modules = Path(module_dir).resolve()
         self._root = Path(work_root)
-        self._backend = state_backend
         self._defaults = provider_defaults
         self._broker_url = broker_url
         self._signing_key = signing_key
+        # The Sluice worker-base image runs the VM agent + (sidecar) adapter; the app image runs the
+        # model server / handler launcher (passed to the agent as APP_IMAGE). Empty ⇒ the app image
+        # serves both (a combined image must then bundle sluice_worker).
+        self._worker_base_image = worker_base_image
+        # Stateless lifecycle (ADR-012): `provision` CREATEs an immutable VM in an ephemeral LOCAL-state
+        # workdir, then discards it (the cloud holds the VM; the prober is the source of truth). DELETE is
+        # a direct cloud-API call (delete_instance/reset_instance) via the prober — never terraform destroy.
         self._prober = prober
+        self._keep_workdir = keep_workdir  # retain workdirs for debugging instead of discarding on success
 
     async def _run(self, workdir: Path, *args: str) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -76,21 +85,6 @@ class TerraformProvider:
         )
         out, err = await proc.communicate()
         return proc.returncode or 0, out.decode(), err.decode()
-
-    def _backend_tf(self, key: str) -> str:
-        b = self._backend
-        if b.get("type") == "s3":
-            return (
-                f'terraform {{\n  backend "s3" {{\n    bucket = {json.dumps(b["bucket"])}\n'
-                f"    key = {json.dumps(key)}\n    region = {json.dumps(b.get('region', 'us-east-1'))}\n"
-                f"  }}\n}}\n"
-            )
-        if b.get("type") == "gcs":
-            return (
-                f'terraform {{\n  backend "gcs" {{\n    bucket = {json.dumps(b["bucket"])}\n'
-                f"    prefix = {json.dumps(key)}\n  }}\n}}\n"
-            )
-        return ""  # local state (dev)
 
     def _module_values(
         self,
@@ -128,6 +122,18 @@ class TerraformProvider:
                 "WORKER__SERVER_HEALTH_PATH": server.health_path,
                 "WORKER__SERVER_READY_TIMEOUT_S": str(server.ready_timeout_s),
             }
+        if app.batch is not None:
+            # An app with a batch block runs the dual-source batch lane. The adapter leases
+            # {app}-batch files through the SAME broker JWT (already in worker_env), fetches input via
+            # the presigned body_url, writes output via broker-minted presigned PUTs, and proxies
+            # status through the broker — so it needs NO object-store credentials (ADR-002/008). Only
+            # the batch knobs are added here.
+            worker_env |= {
+                "WORKER__BATCH_ENABLED": "1",
+                "WORKER__BATCH_OUTPUT_PARTITION_SIZE": str(app.batch.output_partition_size),
+                "WORKER__PUT_CONCURRENCY": str(app.scaling.put_concurrency),
+                "WORKER__STARVE_GRACE_S": str(app.batch.starve_grace_min * 60),
+            }
         # Hand the agent the full worker env explicitly (SLUICE_WORKER_ENV) so non-prefixed model env
         # (MODEL__*, HF_HUB_OFFLINE, ...) survives; plus the archetype/packing it must render.
         env = {
@@ -136,12 +142,21 @@ class TerraformProvider:
             "SLUICE_WORKER_TYPE": worker_type,
             "SLUICE_INSTANCES": str(instances),
             "SLUICE_ARGS": json.dumps(worker_args),
+            # The model image (sidecar server / handler launcher) the agent runs; and whether the
+            # unit gets a GPU (`docker run --gpus all`). app.resources.gpu == 0 ⇒ CPU-only VM.
+            "APP_IMAGE": image,
+            "SLUICE_GPU": "1" if app.resources.gpu else "0",
+            # The VM agent reports heartbeats / receives commands through the gateway broker using the
+            # same short-lived JWT the workers hold (WORKER__BROKER_URL/TOKEN, spread in from worker_env
+            # above) — NO object-store credentials are placed on the VM (ADR-002/008), so a GCE VM works
+            # against an S3 store and vice-versa.
         }
         common: dict[str, object] = {
             "name": name,
             "app": app.name,
             "spot": pricing == "spot",
-            "worker_image": image,
+            # the VM agent (and sidecar adapter) run in the worker-base; the app image rides in APP_IMAGE
+            "worker_image": self._worker_base_image or image,
             "workers_per_vm": instances,
             "linger_seconds": linger_seconds,
             "env": env,
@@ -152,6 +167,9 @@ class TerraformProvider:
                 "machine_type": machine_type,
                 "accelerator_type": accelerator_type,
                 "project": self._defaults.get("project", ""),
+                # the SA attached to the VM: gives it ambient ADC to pull private images (gcr.io) and
+                # the model weights (gs://) via the metadata server — no mounted worker creds.
+                "service_account_email": self._defaults.get("service_account_email", ""),
             }
             if boot_image:
                 common["boot_image"] = boot_image
@@ -203,8 +221,9 @@ class TerraformProvider:
         lines = ['module "vm" {', f"  source = {json.dumps(str(self._modules / f'sluice-vm-{vm_view["provider"]}'))}"]
         lines += [f"  {k} = {_hcl(v)}" for k, v in values.items()]
         lines += ["}", 'output "instance_name" { value = module.vm.instance_name }']
+        # LOCAL state only — no backend.tf. The workdir is ephemeral (discarded after a successful apply
+        # unless keep_workdir); the cloud holds the VM and the prober is the source of truth (ADR-012).
         (workdir / "main.tf").write_text("\n".join(lines) + "\n")
-        (workdir / "backend.tf").write_text(self._backend_tf(f"sluice/apps/{app.name}/tf/{region}/{name}"))
         return workdir
 
     async def provision(
@@ -227,27 +246,33 @@ class TerraformProvider:
         for _ in range(count):
             name = f"sluice-{app.name}-{uuid.uuid4().hex[:6]}"
             workdir = self._render(app, name=name, region=region, pricing=pricing, vm_view=vm_view)
-            for args in (
-                ("init", "-input=false"),
-                ("plan", "-out=plan.tfplan", "-input=false"),
-                ("apply", "plan.tfplan"),
-            ):
-                rc, _out, err = await self._run(workdir, *args)
-                if rc != 0:
-                    await self._run(workdir, "destroy", "-auto-approve", "-input=false")
-                    raise ProvisionFailure(classify_error(err), err.strip()[-500:])
-            rc, out, _err = await self._run(workdir, "output", "-json")
+            try:
+                for tf_args in (
+                    ("init", "-input=false"),
+                    ("plan", "-out=plan.tfplan", "-input=false"),
+                    ("apply", "plan.tfplan"),
+                ):
+                    rc, _out, err = await self._run(workdir, *tf_args)
+                    if rc != 0:
+                        # Clean any partially-created resource via the LOCAL state before surfacing the error.
+                        await self._run(workdir, "destroy", "-auto-approve", "-input=false")
+                        # Keep the tail of stderr where terraform prints the Error block (the `Error:`
+                        # line + resource + troubleshooting footer). 500 chars caught only the footer.
+                        raise ProvisionFailure(classify_error(err), err.strip()[-2000:])
+                rc, out, _err = await self._run(workdir, "output", "-json")
+            finally:
+                self._discard(workdir)  # ephemeral state — never reused (the prober is the truth)
             instance = name
             if rc == 0 and out.strip():
                 instance = json.loads(out).get("instance_name", {}).get("value", name)
-            if instance != name:
-                workdir.rename(workdir.with_name(instance))
             records.append(
                 VmRecord(
                     id=instance,
                     app=app.name,
                     provider=vm_view["provider"],
                     region=region,
+                    # GCE zone (region+suffix) so a later reap can address the instance; EC2 is region-bound.
+                    zone=(region + self._defaults.get("zone_suffix", "-a")) if vm_view["provider"] == "gce" else "",
                     pricing=pricing,
                     machine_type=vm_view["machine_type"],
                     state=VmState.provisioning,
@@ -256,14 +281,22 @@ class TerraformProvider:
             )
         return records
 
+    def _discard(self, workdir: Path) -> None:
+        """Remove the ephemeral local-state workdir after apply (kept only when keep_workdir is set)."""
+        if not self._keep_workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
+
     async def instance_states(self, app: str) -> list[VmRecord]:
         if self._prober is None:
             return []
         return await self._prober.instance_states(app)
 
-    async def destroy(self, app: str, vm_ids: list[str]) -> None:
-        if not (self._root / app).exists():
-            return
-        for main_tf in (self._root / app).rglob("main.tf"):
-            if main_tf.parent.name in vm_ids:
-                await self._run(main_tf.parent, "destroy", "-auto-approve", "-input=false")
+    async def delete_instance(self, record: VmRecord) -> None:
+        """Reap a VM by a direct cloud-API delete (never terraform destroy). No-op without a prober."""
+        if self._prober is not None:
+            await self._prober.delete_instance(record.id, record.zone)
+
+    async def reset_instance(self, record: VmRecord) -> None:
+        """Hard-reboot a (hung) VM via the cloud API to try to recover it. No-op without a prober."""
+        if self._prober is not None:
+            await self._prober.reset_instance(record.id, record.zone)

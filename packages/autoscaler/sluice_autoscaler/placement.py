@@ -25,7 +25,6 @@ class Candidate(BaseModel):
     gpu_type: str = ""
     selector: dict[str, str] = Field(default_factory=dict)  # k8s node selector for this attempt
     tolerations: list[Toleration] = Field(default_factory=list)  # k8s only
-    schedule_grace_s: int = 180  # k8s Pending grace before this candidate is stocked out
     # Resolved per-candidate worker config (app-level worker/image/env/args merged with overrides).
     image: str = ""
     env: dict[str, str] = Field(default_factory=dict)
@@ -38,7 +37,6 @@ class Candidate(BaseModel):
     accelerator_type: str = ""
     boot_image: str = ""
     linger_seconds: int = 300
-    max_vms: int = 0
 
 
 def _resolve(app: AppSpec, cand) -> dict:
@@ -81,7 +79,6 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
                         gpu_type=gpu,
                         selector=dict(selector),
                         tolerations=list(spec.tolerations),
-                        schedule_grace_s=spec.schedule_grace_s,
                         **resolved,
                     )
                 )
@@ -99,7 +96,6 @@ def expand_candidates(app: AppSpec) -> list[Candidate]:
                         accelerator_type=spec.accelerator_type,
                         boot_image=spec.boot_image,
                         linger_seconds=spec.linger_seconds,
-                        max_vms=spec.max_vms,
                         **resolved,
                     )
                 )

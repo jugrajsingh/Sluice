@@ -28,7 +28,6 @@ def _app(placement=None):
                     pricing="spot",
                     node_selectors=[{"gke-nodepool": "l4-spot"}, {"gke-spot": "true"}],
                     tolerations=[Toleration(key="nvidia.com/gpu")],
-                    schedule_grace_s=120,
                 ),
             ),
             VmCandidate(
@@ -57,9 +56,9 @@ def test_expansion_preserves_author_order_across_mixed_candidates():
     ]
     # ordered node selectors: targeted pool first, broader fallback second
     assert cs[0].selector == {"gke-nodepool": "l4-spot"} and cs[1].selector == {"gke-spot": "true"}
-    # vm candidates carry their region; k8s carry tolerations + grace
+    # vm candidates carry their region; k8s carry tolerations
     assert [c.location for c in cs if c.type == "vm"] == ["us-central1", "europe-west3"]
-    assert cs[0].tolerations[0].key == "nvidia.com/gpu" and cs[0].schedule_grace_s == 120
+    assert cs[0].tolerations[0].key == "nvidia.com/gpu"
 
 
 def test_candidate_key_includes_cluster_selector_gpu_pricing():
