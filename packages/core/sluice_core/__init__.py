@@ -10,6 +10,7 @@ from .interfaces import (
     ComputeProvider,
     InferenceHandler,
     InferenceObjects,
+    NoWorkerPods,
     ObjectStore,
     Queue,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "ComputeProvider",
     "InferenceHandler",
     "InferenceObjects",
+    "NoWorkerPods",
     "ObjectStoreInferenceObjects",
     "parse_app_yaml",
     "serialize_app_yaml",
