@@ -2,6 +2,16 @@ import pytest
 from sluice_drivers.gcs_store import GcsObjectStore
 
 
+def test_gcs_store_construction_does_not_require_running_loop():
+    """Regression: the gcloud.aio Storage client builds an aiohttp connector in __init__, which
+    calls asyncio.get_running_loop(). The gateway/console construct the object store at module
+    import time (before uvicorn starts the event loop), so construction MUST be lazy — otherwise
+    they crash on startup with 'RuntimeError: no running event loop'. This sync test (no loop)
+    reproduces that import-time scenario."""
+    store = GcsObjectStore(bucket="b")
+    assert store is not None
+
+
 @pytest.mark.asyncio
 async def test_gcs_emulator_returns_plain_url():
     store = GcsObjectStore(bucket="b", endpoint="http://localhost:4443")
