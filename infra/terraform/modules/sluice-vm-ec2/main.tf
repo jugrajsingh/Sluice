@@ -4,19 +4,26 @@ resource "aws_instance" "worker" {
   subnet_id            = var.subnet_id != "" ? var.subnet_id : null
   iam_instance_profile = var.iam_instance_profile != "" ? var.iam_instance_profile : null
 
+  # A guest `shutdown -h now` (the agent's idle self-terminate) TERMINATES the instance — mirrors GCE's
+  # self-delete so no STOPPED-but-billing instance lingers (stateless lifecycle, ADR-012).
+  instance_initiated_shutdown_behavior = "terminate"
+
   dynamic "instance_market_options" {
     for_each = var.spot ? [1] : []
     content {
       market_type = "spot"
       spot_options {
-        instance_interruption_behavior = "stop"
-        spot_instance_type             = "persistent"
+        # Spot interruption TERMINATES (not stop) → instance + root volume freed. `terminate` requires a
+        # one-time request (AWS rejects persistent + terminate).
+        instance_interruption_behavior = "terminate"
+        spot_instance_type             = "one-time"
       }
     }
   }
 
   root_block_device {
-    volume_size = var.disk_gb
+    volume_size           = var.disk_gb
+    delete_on_termination = true # explicit: root volume dies with the instance (no orphaned EBS)
   }
 
   user_data = templatefile("${path.module}/startup.sh.tpl", {

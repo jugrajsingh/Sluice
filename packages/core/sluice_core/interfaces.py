@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
 from .models import AppSpec, AppStatus, Message, QueueDepth, VmRecord, WorkerStatus
+
+
+class NoWorkerPods(Exception):
+    """Raised when no worker pod is available to read logs from.
+
+    This is the expected signal for VM-backed apps (whose workers run on burst VMs, not
+    k8s pods) and for apps that are currently scaled to zero — callers (e.g. the console)
+    translate it into a clear, user-facing message rather than a server error.
+    """
 
 
 @runtime_checkable
@@ -46,6 +56,20 @@ class Cache(Protocol):
 @runtime_checkable
 class ClusterInspector(Protocol):
     async def workers(self, app: AppSpec) -> list[WorkerStatus]: ...
+    def pod_logs(
+        self,
+        app: AppSpec,
+        *,
+        pod: str | None = None,
+        since_seconds: int | None = None,
+        tail: int = 200,
+        follow: bool = False,
+    ) -> AsyncIterator[bytes]:
+        """Stream logs from one worker pod (the active one if `pod` is None).
+
+        Raises `NoWorkerPods` when there is no pod to read from.
+        """
+        ...
 
 
 @runtime_checkable
@@ -54,7 +78,11 @@ class ComputeProvider(Protocol):
         self, app: AppSpec, *, region: str, pricing: str, count: int, **worker: object
     ) -> list[VmRecord]: ...
     async def instance_states(self, app: str) -> list[VmRecord]: ...
-    async def destroy(self, app: str, vm_ids: list[str]) -> None: ...
+    # Stateless lifecycle (ADR-012): reap by direct cloud-API delete-by-name, never terraform destroy;
+    # reset hard-reboots a hung VM to try to recover it. Both take the observed record (it carries the
+    # zone needed to address the instance).
+    async def delete_instance(self, record: VmRecord) -> None: ...
+    async def reset_instance(self, record: VmRecord) -> None: ...
 
 
 @runtime_checkable

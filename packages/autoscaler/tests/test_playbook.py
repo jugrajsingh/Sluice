@@ -42,7 +42,6 @@ def _app(with_vm=True):
                     pricing="spot",
                     machine_type="g2",
                     regions=["r1", "r2"],
-                    max_vms=3,
                     linger_seconds=300,
                 ),
             )
@@ -52,7 +51,7 @@ def _app(with_vm=True):
         image="i",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="l4"),
-        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3, schedule_grace_s=180),
+        scaling=ScalingSpec(messages_per_instance=10, max_scale_up_per_cycle=3, startup_grace_s=180),
         placement=placement,
     )
 
@@ -71,14 +70,13 @@ def _k8s_app(grace=180, selectors=None):
         image="i",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="l4"),
-        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3, schedule_grace_s=180),
+        scaling=ScalingSpec(messages_per_instance=10, max_scale_up_per_cycle=3, startup_grace_s=grace),
         placement=[
             KubernetesCandidate(
                 provider="in-cluster",
                 spec=K8sPlacementSpec(
                     pricing="spot",
                     node_selectors=selectors or [{"zone": "z1"}, {"zone": "z2"}],
-                    schedule_grace_s=grace,
                 ),
             )
         ],
@@ -111,7 +109,7 @@ def test_reap_exited_pods_always():
 def test_backlog_creates_pods_on_first_candidate():
     p = plan(_app(), Observed(depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
     creates = _of(CreatePods, p.actions)
-    assert creates and creates[0].count == 3  # capped by scale_up_count
+    assert creates and creates[0].count == 3  # capped by maxScaleUpPerCycle
     assert creates[0].candidate.selector == {"zone": "z1"} and p.phase == "Scaling"
 
 
@@ -138,7 +136,7 @@ def test_k8s_exhausted_escalates_to_vm():
     p = plan(app, Observed(depth=QueueDepth(visible=100)), stocked=stocked, now=0, cooldown_until=0)
     prov = _of(ProvisionVms, p.actions)
     assert prov and prov[0].candidate.location == "r1"
-    assert prov[0].count == 3  # need 10 units -> capped maxVms=3
+    assert prov[0].count == 3  # need 10 units -> capped by maxScaleUpPerCycle=3 (per-cycle cap on VMs)
 
 
 def test_all_candidates_stocked_is_held():
@@ -183,57 +181,37 @@ def test_being_destroyed_vm_does_not_count_as_serving_capacity():
         stocked={},
         now=10_000,  # past boot deadline -> destroyed
         cooldown_until=0,
-        boot_deadline_s=600,
     )
     assert _of(DestroyVm, p.actions)
     # the dying VM didn't count as a serving unit, so the cycle still scales up
     assert p.phase == "Scaling" and (_of(CreatePods, p.actions) or _of(ProvisionVms, p.actions))
 
 
-def test_per_candidate_vm_cap_counts_only_that_candidates_live_vms():
-    # vmA (gce, max 1) and vmB (ec2, max 3): 3 live VMs on vmA must NOT consume vmB's cap.
+def test_stocked_vm_candidate_advances_to_next_vm_candidate():
+    # vmA (gce) is stocked out -> the walk advances to vmB (ec2) and provisions there. The per-app
+    # instance cap is now scaling.maxInstances + the per-cycle cap; there is no per-candidate VM cap.
     app = AppSpec(
         name="m",
         image="i",
         handler="h:H",
         resources=ResourcesSpec(gpu=1, gpu_type="l4"),
-        scaling=ScalingSpec(messages_per_worker=10, scale_up_count=3),
+        scaling=ScalingSpec(messages_per_instance=10, max_scale_up_per_cycle=3),
         placement=[
-            VmCandidate(
-                provider="gce", spec=VmPlacementSpec(pricing="spot", machine_type="a", regions=["rA"], max_vms=1)
-            ),
-            VmCandidate(
-                provider="ec2", spec=VmPlacementSpec(pricing="spot", machine_type="b", regions=["rB"], max_vms=3)
-            ),
+            VmCandidate(provider="gce", spec=VmPlacementSpec(pricing="spot", machine_type="a", regions=["rA"])),
+            VmCandidate(provider="ec2", spec=VmPlacementSpec(pricing="spot", machine_type="b", regions=["rB"])),
         ],
     )
     ks = _keys(app)  # [vm gce rA, vm ec2 rB]
-    live_on_a = [
-        VmView(
-            record=VmRecord(
-                id=f"a{i}",
-                app="m",
-                provider="gce",
-                region="rA",
-                pricing="spot",
-                machine_type="a",
-                state=VmState.running,
-                created_at=0,
-            ),
-            phase="running",
-            workers_running=1,
-        )
-        for i in range(3)
-    ]
     p = plan(
         app,
-        Observed(vms=live_on_a, depth=QueueDepth(visible=100)),
-        stocked={ks[0]: "vmA full"},  # vmA stocked; vmB has its own budget
+        Observed(depth=QueueDepth(visible=100)),
+        stocked={ks[0]: "vmA stocked"},  # vmA out; walk advances to vmB
         now=0,
         cooldown_until=0,
     )
     prov = _of(ProvisionVms, p.actions)
-    assert prov and prov[0].candidate.location == "rB"  # vmB provisions despite 3 live VMs on vmA
+    assert prov and prov[0].candidate.location == "rB"  # advanced past the stocked vmA
+    assert prov[0].count == 3  # per-cycle cap (maxScaleUpPerCycle=3), not the full need=10
 
 
 def test_boot_deadline_exceeded_destroys_and_marks():
@@ -243,7 +221,6 @@ def test_boot_deadline_exceeded_destroys_and_marks():
         stocked={},
         now=10_000,
         cooldown_until=0,
-        boot_deadline_s=600,
     )
     assert _of(DestroyVm, p.actions) and _of(MarkStockout, p.actions)
 
@@ -309,12 +286,13 @@ def test_vm_counts_as_one_unit_regardless_of_packing():
     assert p.phase == "Ready" and not _of(CreatePods, p.actions) and not _of(ProvisionVms, p.actions)
 
 
-def test_max_workers_caps_desired_across_substrates():
+def test_max_instances_caps_desired_across_substrates():
     app = _app()
-    app.scaling.max_workers = 2
+    app.scaling.max_instances = 2
     p = plan(app, Observed(depth=QueueDepth(visible=1000)), stocked={}, now=0, cooldown_until=0)
     creates = _of(CreatePods, p.actions)
-    assert creates and creates[0].count == 2  # capped by maxWorkers, not scale_up_count
+    assert creates and creates[0].count == 2  # desired capped at maxInstances=2 (so need=2, below the per-cycle cap)
+    assert p.desired == 2
 
 
 # --- unschedulable classification (Task 4) ---
@@ -343,12 +321,12 @@ def test_capacity_within_grace_waits_without_stockout():
     assert not _of(RemoveStuckPod, p.actions) and not _of(MarkStockout, p.actions)
 
 
-def test_per_candidate_grace_overrides_app_default():
-    app = _k8s_app(grace=30)  # candidate grace 30, app-level default 180
+def test_app_level_startup_grace_drives_stuck_pod_stockout():
+    app = _k8s_app(grace=30)  # single app-level startup grace = 30s (no per-candidate grace anymore)
     k0 = _keys(app)[0]
     stuck = _pod(WorkerState.unschedulable, age=60, cand=k0, reason="Insufficient nvidia.com/gpu")
     p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
-    # age 60 > candidate grace 30 (though < app default 180) -> stock out
+    # age 60 > startup_grace 30 -> stock out
     assert any(m.candidate_key == k0 for m in _of(MarkStockout, p.actions))
 
 
@@ -374,3 +352,47 @@ def test_all_selectors_misconfigured_holds_with_config_reason():
     p = plan(app, Observed(pods=[stuck], depth=QueueDepth(visible=100)), stocked={}, now=0, cooldown_until=0)
     assert not _of(MarkStockout, p.actions) and not _of(CreatePods, p.actions)
     assert p.phase == "Held" and "untolerated taint" in p.reason
+
+
+# --- unified scaling knobs (min/max instances, per-cycle cap, desired field) ---
+
+
+def test_min_instances_floor_provisions_toward_floor_when_queue_empty():
+    # empty queue + minInstances=2, 0 live -> plan drives desired up to the warm floor.
+    app = _k8s_app()
+    app.scaling.min_instances = 2
+    p = plan(app, Observed(depth=QueueDepth(visible=0)), stocked={}, now=0, cooldown_until=0)
+    assert p.desired == 2  # floored at minInstances even with no backlog
+    creates = _of(CreatePods, p.actions)
+    assert creates and creates[0].count == 2  # creates toward the floor (need=2, below the per-cycle cap)
+
+
+def test_max_instances_caps_desired_across_pods_and_vms():
+    # deep queue + maxInstances=3 -> desired capped at 3 (the cap spans pods+VMs combined).
+    app = _app()  # k8s + vm candidates
+    app.scaling.max_instances = 3
+    p = plan(app, Observed(depth=QueueDepth(visible=1000)), stocked={}, now=0, cooldown_until=0)
+    assert p.desired == 3  # ceil(1000/10)=100 clamped to maxInstances=3
+
+
+def test_max_scale_up_per_cycle_caps_vm_provision_count():
+    # BUG-FIX guard: the VM lane MUST honor the per-cycle cap (old code had none -> burst storm).
+    # k8s candidate stocked so the VM candidate is selected; maxScaleUpPerCycle=2, need=10 -> count==2.
+    app = _app()
+    app.scaling.max_scale_up_per_cycle = 2
+    ks = _keys(app)  # [k8s z1, k8s z2, vm r1, vm r2]
+    p = plan(
+        app,
+        Observed(depth=QueueDepth(visible=100)),  # desired=ceil(100/10)=10 -> need=10
+        stocked={ks[0]: "x", ks[1]: "x"},  # both k8s selectors stocked -> walk lands on the VM candidate
+        now=0,
+        cooldown_until=0,
+    )
+    prov = _of(ProvisionVms, p.actions)
+    assert prov and prov[0].count == 2  # NOT 10 — per-cycle cap applies to VMs (the bug-fix)
+
+
+def test_desired_field_is_populated_on_the_plan():
+    app = _app()
+    p = plan(app, Observed(depth=QueueDepth(visible=50)), stocked={}, now=0, cooldown_until=0)
+    assert p.desired == 5  # ceil(50/10) — surfaced for the controller's stabilization peak

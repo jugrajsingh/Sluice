@@ -16,6 +16,7 @@ namespaces). The spec store (AppRegistry) lives outside Kubernetes entirely.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -36,6 +37,7 @@ from kubernetes_asyncio.client import (
     V1Toleration,
 )
 from sluice_core.auth import mint_worker_token
+from sluice_core.interfaces import NoWorkerPods
 from sluice_core.models import AppSpec, ServerSpec, Toleration, WorkerState, WorkerStatus
 
 from .inspector import map_pod_state
@@ -88,6 +90,7 @@ def build_worker_pod(
     candidate_key: str = "",
     tolerations: list[Toleration] | None = None,
     image: str = "",
+    adapter_image: str = "",
     env: dict[str, str] | None = None,
     args: list[str] | None = None,
     instances: int = 1,
@@ -143,7 +146,9 @@ def build_worker_pod(
         }
         adapter_c = V1Container(
             name="worker",
-            image=image,
+            # the adapter runs in the Sluice worker-base image (sluice_worker); the server keeps the
+            # unmodified BYO model image. Falls back to the app image for a combined image.
+            image=adapter_image or image,
             command=["python", "-m", "sluice_worker.adapter"],
             env=_env_list(adapter_env),
         )
@@ -229,6 +234,7 @@ class KubePodManager(_KubeBase):
         max_concurrent_creates: int = 50,
         broker_url: str = "http://sluice-gateway",
         signing_key: str = "",
+        worker_base_image: str = "",
         **kw,
     ) -> None:
         super().__init__(**kw)
@@ -236,6 +242,7 @@ class KubePodManager(_KubeBase):
         self._delete_options = V1DeleteOptions()
         self._broker_url = broker_url
         self._signing_key = signing_key
+        self._worker_base_image = worker_base_image  # sidecar adapter image (sluice_worker); server keeps app.image
 
     def _core(self) -> CoreV1Api:
         assert self._api_client is not None
@@ -250,6 +257,7 @@ class KubePodManager(_KubeBase):
         candidate_key: str = "",
         tolerations: list[Toleration] | None = None,
         image: str = "",
+        adapter_image: str = "",
         env: dict[str, str] | None = None,
         args: list[str] | None = None,
         instances: int = 1,
@@ -270,6 +278,7 @@ class KubePodManager(_KubeBase):
                 candidate_key=candidate_key,
                 tolerations=tolerations,
                 image=image,
+                adapter_image=adapter_image or self._worker_base_image,
                 env=env,
                 args=args,
                 instances=instances,
@@ -339,3 +348,39 @@ class KubeClusterInspector(_KubeBase):
                 )
             )
         return out
+
+    async def _active_pod(self, app: AppSpec) -> str | None:
+        """Pick a pod to read logs from: a running worker if any, else any owned pod."""
+        workers = await self.workers(app)
+        running = [w for w in workers if w.state == WorkerState.running]
+        chosen = running or workers
+        return chosen[0].pod if chosen else None
+
+    async def pod_logs(
+        self,
+        app: AppSpec,
+        *,
+        pod: str | None = None,
+        since_seconds: int | None = None,
+        tail: int = 200,
+        follow: bool = False,
+    ) -> AsyncIterator[bytes]:
+        """Stream logs from one worker pod (the active one when `pod` is None).
+
+        Raises `NoWorkerPods` when there is no pod to read from (e.g. a VM-backed app, whose
+        workers don't run as k8s pods, or an app scaled to zero).
+        """
+        target = pod or await self._active_pod(app)
+        if target is None:
+            raise NoWorkerPods(f"no worker pods for app {app.name!r} (VM workers don't ship logs via the API)")
+        resp = await self._core().read_namespaced_pod_log(
+            name=target,
+            namespace=self._ns,
+            since_seconds=since_seconds,
+            tail_lines=tail,
+            follow=follow,
+            timestamps=False,
+            _preload_content=False,
+        )
+        async for chunk in resp.content.iter_any():
+            yield chunk
