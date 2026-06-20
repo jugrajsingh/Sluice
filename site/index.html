@@ -128,10 +128,11 @@
     <h1>Queue-driven, <em>scale-from-zero</em> GPU inference for any Kubernetes.</h1>
     <p class="lede">
       Sluice is the open-source, vendor-neutral take on managed async inference
-      (the SageMaker-Async / Vertex-Batch pattern) — on your own cluster. Traffic
-      bursts deepen a queue instead of returning 503s, workers own their lifecycle
-      and are never killed mid-job, and when your cluster runs out of GPUs, Sluice
-      bursts to spot VMs in another region.
+      (the SageMaker-Async / Vertex-Batch pattern) — on your own cluster. You bring
+      only your model: a queue to sit behind, GPUs that scale from zero, and two ways
+      to feed it — online and batch. Traffic bursts deepen the queue instead of
+      returning 503s, workers own their lifecycle and are never killed mid-job, and
+      when your cluster runs out of GPUs, Sluice bursts to spot VMs in another region.
     </p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/jugrajsingh/Sluice">View on GitHub</a>
@@ -144,9 +145,19 @@
     <p class="sub">Bring only your model — the worker SDK, gateway, autoscaler, and charts do the rest.</p>
     <div class="grid">
       <div class="card">
-        <h3>Burst-proof intake</h3>
-        <p>A spike never fails a request. The gateway stores the body, enqueues an ID,
-           and answers immediately with a ticket and a wait-time estimate.</p>
+        <h3>Burst-proof online intake</h3>
+        <p>A spike never fails a request. On <code>POST /v1/{app}/infer</code>, a cache hit
+           returns an instant <code>200</code>; otherwise the gateway enqueues and briefly
+           long-polls — either a <code>200</code> result or a <code>202</code> with a ticket and
+           a <code>Retry-After</code>. An optional <code>_rid</code> in the body is the
+           idempotency/cache key, so a repeat is a free <code>200</code> — no GPU.</p>
+      </div>
+      <div class="card">
+        <h3>Batch is its own lane</h3>
+        <p>Not the same path as online — batch is an upload-first, multi-file job on a
+           24h SLA. Create a job, push JSONL files to presigned URLs, submit (one queue
+           message per file), poll status, then pull gzipped output parts. If a spot VM
+           dies mid-file, the next worker resumes from the last checkpoint.</p>
       </div>
       <div class="card">
         <h3>Never kills a busy worker</h3>
@@ -170,9 +181,10 @@
            your bucket (kops-style), so the control plane is stateless and restartable.</p>
       </div>
       <div class="card">
-        <h3>One tiny contract</h3>
-        <p>Request ID in the queue, body and result in the bucket. Any worker that can
-           read both can serve — a pod in your cluster or a VM on another continent.</p>
+        <h3>One box, both lanes</h3>
+        <p>Request ID in the queue, body and result in the bucket. The same worker serves
+           online and batch off separate queues — online is prioritized, batch backfills the
+           idle GPU. A pod in your cluster or a VM on another continent, same contract.</p>
       </div>
       <div class="card">
         <h3>Pack the GPU, no MPS</h3>
@@ -190,9 +202,16 @@
       <li><strong>Define an app, apply it</strong>
         One YAML: image, handler, resources, scaling, placement. <code>sluice apply</code>
         stores it in your object store — that bucket is the source of truth.</li>
-      <li><strong>Clients post work</strong>
-        <code>POST /v1/{app}/infer</code> writes the body to the bucket, enqueues the
-        request ID, and returns a ticket with an ETA. Batches work the same way.</li>
+      <li><strong>Clients post online work</strong>
+        <code>POST /v1/{app}/infer</code> writes the body to the bucket and enqueues its
+        request ID. A cache hit answers <code>200</code> instantly; otherwise a short
+        long-poll returns <code>200</code>, or <code>202</code> with a ticket and a
+        <code>Retry-After</code> to poll <code>GET /v1/{app}/status/{ticket}</code>.</li>
+      <li><strong>Or run a batch job</strong>
+        Batch is a separate, upload-first lane on a 24h SLA. <code>POST /v1/{app}/batch</code>
+        returns a <code>job_id</code>; you upload JSONL files to presigned URLs, submit (one
+        queue message per file), poll the job, and download gzipped output parts. Batch rides
+        its own queue — online is prioritized, batch backfills the idle GPU.</li>
       <li><strong>The controller scales up</strong>
         Queue depth ÷ messages-per-worker says how many workers should exist. The
         placement playbook tries your ordered placement list top-to-bottom, marking each
@@ -214,16 +233,14 @@
 <span class="k">handler</span><span class="p">:</span> <span class="s">handler:SegmentationHandler</span>
 <span class="k">queue</span><span class="p">:</span>
   <span class="k">ref</span><span class="p">:</span> <span class="s">sluice-segmentation</span>
-<span class="k">storage</span><span class="p">:</span>
-  <span class="k">prefix</span><span class="p">:</span> <span class="s">apps/segmentation</span>
 <span class="k">resources</span><span class="p">:</span>
   <span class="k">gpu</span><span class="p">:</span> <span class="s">1</span>
   <span class="k">gpuType</span><span class="p">:</span> <span class="s">nvidia-l4</span>
   <span class="k">cpu</span><span class="p">:</span> <span class="s">4</span>
   <span class="k">memoryGb</span><span class="p">:</span> <span class="s">16</span>
 <span class="k">scaling</span><span class="p">:</span>
-  <span class="k">messagesPerWorker</span><span class="p">:</span> <span class="s">8</span>
-  <span class="k">maxWorkers</span><span class="p">:</span> <span class="s">0</span>   <span class="c"># unbounded</span>
+  <span class="k">messagesPerInstance</span><span class="p">:</span> <span class="s">8</span>
+  <span class="k">maxInstances</span><span class="p">:</span> <span class="s">0</span>   <span class="c"># unbounded</span>
 <span class="k">placement</span><span class="p">:</span>                    <span class="c"># ordered — tried top to bottom</span>
   <span class="p">-</span> <span class="k">type</span><span class="p">:</span> <span class="s">kubernetes</span>
     <span class="k">provider</span><span class="p">:</span> <span class="s">in-cluster</span>
@@ -243,16 +260,17 @@
 <pre><code><span class="c"># register the app (spec lands in your bucket)</span>
 <span class="p">sluice apply -f app.yaml</span>
 
-<span class="c"># submit work — returns a ticket instantly</span>
+<span class="c"># submit online work — cache hit returns 200 now,</span>
+<span class="c"># otherwise a short long-poll, then 202 + a ticket</span>
 <span class="p">curl -s $GATEWAY/v1/segmentation/infer \
      -d @body.json</span>
-<span class="c"># {"ticket":"…","etaSeconds":42}</span>
+<span class="c"># 202 -> {"ticket":"…","retry_after":42}</span>
 
-<span class="c"># poll for the result</span>
+<span class="c"># poll the ticket until it returns 200 with the result</span>
 <span class="p">curl -s $GATEWAY/v1/segmentation/status/$TICKET</span>
 
 <span class="c"># idle again? workers have already exited.</span>
-<span class="p">sluice status segmentation</span>
+<span class="p">sluice get segmentation</span>
 </code></pre>
         <p style="color:var(--muted); font-size:.9rem; margin-top:14px">
           Install with Helm: gateway, console, and autoscaler ship as one chart;
@@ -263,7 +281,7 @@
   </section>
 
   <footer class="site">
-    <span>Apache-2.0 · © 2026 Jugraj Singh</span>
+    <span>AGPL-3.0 · © 2026 Jugraj Singh</span>
     <span><a href="https://github.com/jugrajsingh/Sluice">github.com/jugrajsingh/Sluice</a></span>
   </footer>
 
