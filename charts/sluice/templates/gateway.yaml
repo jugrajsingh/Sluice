@@ -1,4 +1,4 @@
-{{- $caps := list "storage" "queue" -}}
+{{- $caps := list "storage" "state" "queue" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: sluice-gateway, labels: { app.kubernetes.io/name: sluice-gateway } }
@@ -14,6 +14,7 @@ spec:
       containers:
         - name: gateway
           image: "{{ .Values.image.registry }}/sluice-gateway:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["uvicorn", "sluice_gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]
           env:
 {{ include "sluice.backendEnv" . | indent 12 }}
@@ -21,6 +22,10 @@ spec:
             {{- if .Values.broker.signingKeySecret }}
             - name: GATEWAY__SIGNING_KEY
               valueFrom: { secretKeyRef: { name: "{{ .Values.broker.signingKeySecret }}", key: signing-key } }
+            {{- end }}
+            {{- if .Values.apiKeySecret }}
+            - name: GATEWAY__API_KEY
+              valueFrom: { secretKeyRef: { name: "{{ .Values.apiKeySecret }}", key: api-key } }
             {{- end }}
 {{- include "sluice.credFileEnv" (dict "root" $ "caps" $caps) }}
 {{- include "sluice.credEnvFrom" (dict "root" $ "caps" $caps) }}

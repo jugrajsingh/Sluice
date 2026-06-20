@@ -1,4 +1,4 @@
-{{- $caps := list "storage" "queue" -}}
+{{- $caps := list "storage" "state" "queue" -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: sluice-console }
@@ -35,9 +35,14 @@ spec:
       containers:
         - name: console
           image: "{{ .Values.image.registry }}/sluice-console:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["uvicorn", "sluice_console.main:app", "--host", "0.0.0.0", "--port", "8080"]
           env:
 {{ include "sluice.backendEnv" . | indent 12 }}
+            {{- if .Values.apiKeySecret }}
+            - name: CONSOLE__API_KEY
+              valueFrom: { secretKeyRef: { name: "{{ .Values.apiKeySecret }}", key: api-key } }
+            {{- end }}
 {{- include "sluice.credFileEnv" (dict "root" $ "caps" $caps) }}
 {{- include "sluice.credEnvFrom" (dict "root" $ "caps" $caps) }}
           ports: [ { containerPort: 8080 } ]

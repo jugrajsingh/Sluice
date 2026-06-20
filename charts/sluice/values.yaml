@@ -1,12 +1,20 @@
 image:
   registry: ghcr.io/jugrajsingh
   tag: "0.1.0"
+  pullPolicy: IfNotPresent     # set to Always when tracking a moving tag (e.g. :latest)
 queue:
   backend: redis            # redis | sqs   (shared + persistent only — see ADR-005)
   options: {}               # QUEUE__OPTIONS JSON, e.g. { url: redis://sluice-redis:6379 } for bundled Redis
 object_store:
   backend: s3               # s3 | gcs | minio   (shared + persistent only — see ADR-005)
   options: {}               # OBJECT_STORE__OPTIONS JSON, e.g. { bucket: ..., endpoint_url: http://sluice-minio:9000 }
+
+# Optional separate control-plane STATE store (app specs, status, VM heartbeats + tracking ledger) — ADR-011.
+# Leave backend EMPTY to INHERIT object_store (single bucket — default/current behavior). Set it to split
+# control state into its own bucket so the data bucket can carry a lifecycle TTL independently.
+state_store:
+  backend: ""               # ""=inherit object_store | s3 | gcs | minio  -> STATE_STORE__BACKEND
+  options: {}               # STATE_STORE__OPTIONS JSON, e.g. { bucket: my-sluice-state }
 
 # Capability-scoped credential secrets — externally provisioned & mounted (NEVER Workload Identity).
 # Each is mounted only on the components that use that capability, so you can mix clouds: S3 storage
@@ -17,9 +25,12 @@ object_store:
 #   file:          a Secret mounted at /var/secrets/cred-<cap>/<key>, with `env` set to that path
 #                  (GCS service-account JSON via GOOGLE_APPLICATION_CREDENTIALS)
 credentials:
-  storage:                  # object store (app-registry + objectstore-cache inherit it) -> gateway, console, autoscaler
+  storage:                  # object DATA store (inference + batch objects) -> gateway, console, autoscaler
     envFromSecret: ""       # S3/MinIO: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
     file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }   # GCS JSON key
+  state:                    # control-plane STATE store (registry/cache/VM-state) -> gateway, console, autoscaler.
+    envFromSecret: ""       # leave EMPTY to inherit `storage` creds (same account); set only if the state bucket needs different creds
+    file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }   # GCS JSON key for a separate state bucket
   queue:                    # redis / sqs -> gateway, console, autoscaler
     envFromSecret: ""       # SQS: AWS_*  |  Redis: key QUEUE__OPTIONS={"url":"redis://:pw@..."}
     file: { secret: "", key: credentials.json, env: GOOGLE_APPLICATION_CREDENTIALS }
@@ -33,6 +44,11 @@ credentials:
 # Pull secrets for the Sluice images. Empty for public images (ghcr.io/jugrajsingh/*); set when you
 # mirror them into a private registry, e.g. [{ name: ghcr-pull }].
 imagePullSecrets: []
+
+# Static X-API-Key gating the gateway's public admission API (/v1/*) and the console's app-management
+# API (/v1/apps*). Secret with key 'api-key'. Empty ⇒ those APIs are OPEN (the /internal JWT broker
+# and /healthz/metrics are unaffected either way). Set this before exposing the gateway publicly.
+apiKeySecret: ""
 
 broker:
   signingKeySecret: ""       # Secret with key 'signing-key' (HS256). Gateway verifies, autoscaler mints worker JWTs.
@@ -60,11 +76,34 @@ minio:
   storage: 10Gi
   credentialsSecret: ""     # Secret with keys 'root-user' and 'root-password' (required when enabled)
 
-gateway: { replicas: 2, tSyncSeconds: 3 }
+gateway:
+  replicas: 2
+  tSyncSeconds: 3
+  # External HTTPS exposure for the gateway (admission API + the /internal/v1 broker endpoints that
+  # remote workers lease against). Disabled by default — in-cluster control planes use Service DNS.
+  # When enabled set `host`, and point `broker.url` at https://<host> so remote workers resolve it.
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}          # e.g. { cert-manager.io/cluster-issuer: my-issuer } for auto TLS
+    host: ""                 # e.g. sluice-gw.example.com (required when enabled)
+    tls:
+      enabled: false
+      secretName: ""         # cert-manager writes the cert here; defaults to sluice-gateway-tls
 console: { replicas: 1 }
+batchCleanup:
+  enabled: false
+  schedule: "0 * * * *"   # hourly
+  ttlHours: 24             # delete pending_upload/running jobs older than this many hours
 autoscaler:
   replicas: 1
   leaderElection: true      # >1 safe once leader election is on
   placement:
-    prober: ""                  # gce | ec2 | "" (no VM probing)
-    stateBackend: {}            # e.g. { type: gcs, bucket: my-sluice-state } -> PLACEMENT__TF_STATE_BACKEND
+    prober: ""                  # gce | ec2 | "" (no VM probing). Set it to enable burst-VM provisioning;
+                                # VMs use ephemeral local terraform state — NO state bucket (ADR-012).
+    # Sluice worker-base image for burst VMs: runs the VM agent + (sidecar) adapter; the app image
+    # runs the model server/launcher. Must be pullable by the VM's attached service account.
+    workerBaseImage: ""         # -> PLACEMENT__WORKER_BASE_IMAGE
+    # Cloud provider defaults for VM provisioning -> PLACEMENT__PROVIDER_DEFAULTS. GCE keys:
+    # { project, zone_suffix, service_account_email }. EC2: { iam_instance_profile }.
+    providerDefaults: {}

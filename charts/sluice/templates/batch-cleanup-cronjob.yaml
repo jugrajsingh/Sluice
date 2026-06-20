@@ -1,0 +1,37 @@
+{{- if .Values.batchCleanup.enabled -}}
+{{- $caps := list "storage" -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sluice-batch-cleanup
+  labels:
+    app.kubernetes.io/name: sluice-batch-cleanup
+spec:
+  schedule: {{ .Values.batchCleanup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+{{- include "sluice.imagePullSecrets" . }}
+          restartPolicy: OnFailure
+          containers:
+            - name: batch-cleanup
+              image: "{{ .Values.image.registry }}/sluice-console:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["python", "-m", "sluice_console.batch_cleanup", "--ttl-hours", {{ .Values.batchCleanup.ttlHours | quote }}]
+              env:
+{{ include "sluice.backendEnv" . | indent 16 }}
+{{- include "sluice.credFileEnv" (dict "root" $ "caps" $caps) | indent 4 }}
+{{- include "sluice.credEnvFrom" (dict "root" $ "caps" $caps) | indent 4 }}
+              {{- $mounts := include "sluice.credVolumeMounts" (dict "root" $ "caps" $caps) }}
+              {{- if trim $mounts }}
+              volumeMounts:
+{{- $mounts }}
+              {{- end }}
+          {{- $vols := include "sluice.credVolumes" (dict "root" $ "caps" $caps) }}
+          {{- if trim $vols }}
+          volumes:
+{{- $vols }}
+          {{- end }}
+{{- end }}

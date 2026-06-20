@@ -10,6 +10,14 @@
 {{- if .Values.object_store.options }}
 - { name: OBJECT_STORE__OPTIONS, value: {{ .Values.object_store.options | toJson | quote }} }
 {{- end }}
+{{/* STATE_STORE__* only when a separate state backend is configured; empty ⇒ Settings.state_store=None ⇒ inherit object_store (ADR-011). */}}
+{{- $st := .Values.state_store | default dict -}}
+{{- if $st.backend }}
+- { name: STATE_STORE__BACKEND, value: "{{ $st.backend }}" }
+{{- if $st.options }}
+- { name: STATE_STORE__OPTIONS, value: {{ $st.options | toJson | quote }} }
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{/* ---- Capability-scoped credentials -------------------------------------------------------
