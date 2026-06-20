@@ -7,6 +7,10 @@ RUN uv sync --frozen --no-dev --package sluice-worker
 
 FROM python:3.13-slim
 RUN useradd -m -u 10001 sluice
+# docker CLI: on the VM substrate the agent shells out to `docker run` (host socket mounted) to
+# launch the model server + adapter containers. Only the CLI client is needed (no daemon); it is
+# unused — and harmless — for the k8s adapter, which just HTTP-POSTs to localhost.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app
 WORKDIR /app

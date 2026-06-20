@@ -35,16 +35,21 @@ class CacheSettings(BaseModel):
 
 class PlacementSettings(BaseModel):
     stockout_ttl_s: int = 600
-    boot_deadline_s: int = 600
     tf_module_dir: str = "infra/terraform/modules"
-    tf_work_root: str = "/tmp/sluice-tf"
-    tf_state_backend: dict[str, str] = Field(default_factory=dict)  # {type,bucket,region|prefix}
+    tf_work_root: str = "/tmp/sluice-tf"  # ephemeral LOCAL-state workdir root (ADR-012); no remote backend
     provider_defaults: dict[str, str] = Field(default_factory=dict)  # {project,zone_suffix,iam_instance_profile}
+    # The Sluice worker-base image (carries sluice_worker): runs the VM agent + the sidecar adapter,
+    # while the app's own image runs the model server (sidecar) / launcher (handler). Empty ⇒ fall back
+    # to the app image (a combined image must then bundle sluice_worker).
+    worker_base_image: str = ""
 
 
 class Settings(BaseSettings):
     queue: QueueSettings = Field(default_factory=QueueSettings)
     object_store: ObjectStoreSettings = Field(default_factory=ObjectStoreSettings)
+    # Control-plane state store (app specs, status, VM heartbeats + tracking ledger). None ⇒ inherit
+    # `object_store` so single-bucket dev/test/existing deploys keep working unchanged (ADR-011).
+    state_store: ObjectStoreSettings | None = None
     registry: RegistrySettings = Field(default_factory=RegistrySettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     placement: PlacementSettings = Field(default_factory=PlacementSettings)

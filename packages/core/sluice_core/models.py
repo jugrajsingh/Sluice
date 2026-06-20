@@ -17,7 +17,6 @@ class Message(BaseModel):
 class QueueDepth(BaseModel):
     visible: int = 0
     in_flight: int = 0
-    delayed: int = 0
 
 
 class WorkerState(StrEnum):
@@ -41,17 +40,17 @@ class WorkerStatus(BaseModel):
 
 
 class ResourcesSpec(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     gpu: int = 0
     gpu_type: str = Field("", alias="gpuType")
-    cpu: float = 1
-    memory_gb: float = Field(2, alias="memoryGb")
+    cpu: float = 1.0
+    memory_gb: float = Field(2.0, alias="memoryGb")
 
 
 class Toleration(BaseModel):
     """A Kubernetes toleration synthesized onto worker pods (e.g. to tolerate the GPU taint)."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     key: str = ""
     operator: Literal["Exists", "Equal"] = "Exists"
     value: str = ""
@@ -66,24 +65,22 @@ class K8sPlacementSpec(BaseModel):
     `tolerations` are synthesized onto the pod so it can land on tainted (GPU) nodes.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     pricing: Literal["spot", "on-demand"] = "spot"
     node_selectors: list[dict[str, str]] = Field(default_factory=lambda: [{}], alias="nodeSelectors")
     tolerations: list[Toleration] = Field(default_factory=list)
-    schedule_grace_s: int = Field(180, alias="scheduleGraceSeconds")
 
 
 class VmPlacementSpec(BaseModel):
     """Placement on burst VMs of one cloud. The cloud (`gce`/`ec2`) lives on the candidate."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     pricing: Literal["spot", "on-demand"] = "spot"
     machine_type: str = Field("", alias="machineType")
     accelerator_type: str = Field("", alias="acceleratorType")
     boot_image: str = Field("", alias="bootImage")
     regions: list[str] = Field(default_factory=list)
     linger_seconds: int = Field(300, alias="lingerSeconds")
-    max_vms: int = Field(5, alias="maxVms")
 
 
 class ServerSpec(BaseModel):
@@ -93,7 +90,7 @@ class ServerSpec(BaseModel):
     verbatim. Only these knobs configure it.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     port: int = 8080
     request_path: str = Field("/", alias="requestPath")
     method: str = "POST"
@@ -111,7 +108,7 @@ class WorkerSpec(BaseModel):
     - `sidecar`: an HTTP model server (packing itself to `instances`) is fed by the Sluice adapter.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     type: Literal["handler", "sidecar"] = "handler"
     instances: int = 1
     args: list[str] = Field(default_factory=list)
@@ -127,7 +124,7 @@ class WorkerSpec(BaseModel):
 class CandidateOverrides(BaseModel):
     """Per-candidate overrides merged over the app-level values (for heterogeneous GPUs)."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     image: str | None = None
     env: dict[str, str] | None = None
     args: list[str] | None = None
@@ -141,7 +138,7 @@ class KubernetesCandidate(BaseModel):
     registered in the deployment cluster registry (a mounted kubeconfig).
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     type: Literal["kubernetes"] = "kubernetes"
     provider: str = "in-cluster"
     spec: K8sPlacementSpec = Field(default_factory=K8sPlacementSpec)
@@ -151,7 +148,7 @@ class KubernetesCandidate(BaseModel):
 class VmCandidate(BaseModel):
     """A burst-VM placement candidate. `provider` selects the cloud: `gce` or `ec2`."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     type: Literal["vm"] = "vm"
     provider: str = "gce"
     spec: VmPlacementSpec = Field(default_factory=VmPlacementSpec)
@@ -167,17 +164,50 @@ def _default_placement() -> list[KubernetesCandidate]:
     return [KubernetesCandidate()]
 
 
+class BatchSpec(BaseModel):
+    """Optional bulk-batch config block for an app."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    batch_sla_hours: int = Field(24, alias="batchSlaHours", ge=1)
+    output_partition_size: int = Field(1000, alias="outputPartitionSize", ge=1)
+    upload_ttl_hours: int = Field(24, alias="uploadTtlHours", ge=1)
+    starve_grace_min: int = Field(7, alias="starveGraceMin", ge=1)
+
+
 class ScalingSpec(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    messages_per_worker: int = Field(10, alias="messagesPerWorker")
-    max_workers: int = Field(0, alias="maxWorkers")  # 0 = unbounded
-    scale_up_count: int = Field(3, alias="scaleUpCount")
-    cooldown_s: int = Field(30, alias="cooldownSeconds")
-    schedule_grace_s: int = Field(180, alias="scheduleGraceSeconds")
+    # One instance = 1 pod = 1 burst VM = one serving unit (each may pack `worker.instances` replicas
+    # internally; messagesPerInstance is tuned per packed unit).
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    messages_per_instance: int = Field(10, alias="messagesPerInstance", ge=1)  # queue depth one instance absorbs
+    min_instances: int = Field(0, alias="minInstances", ge=0)  # warm floor: always keep ≥ this many serving
+    max_instances: int = Field(0, alias="maxInstances", ge=0)  # hard ceiling across pods+VMs; 0 = unbounded
+    max_scale_up_per_cycle: int = Field(3, alias="maxScaleUpPerCycle", ge=1)  # cap new units created per reconcile
+    scale_up_cooldown_s: int = Field(60, alias="scaleUpCooldownSeconds", ge=0)  # debounce after a scale-up
+    scale_down_stabilization_s: int = Field(
+        120, alias="scaleDownStabilizationSeconds", ge=0
+    )  # hold the recent desired peak this long before shrinking (anti-flap)
+    startup_grace_s: int = Field(300, alias="startupGraceSeconds", ge=1)  # pod-schedule + VM-boot deadline
+    infer_sla_minutes: int = Field(30, alias="inferSlaMinutes", ge=1)
+    rate_per_instance_per_min: int = Field(1000, alias="ratePerInstancePerMin", ge=1)
+    put_concurrency: int = Field(8, alias="putConcurrency", ge=1)
+    # Hung-VM detection + escalation (ADR-012). A RUNNING VM whose gateway-stamped heartbeat is stale is
+    # excluded from capacity (→ a replacement is provisioned), then reset, then deleted — so a hung VM
+    # never silently holds a GPU forever. `wedged_restart_max` caps warm-restart attempts before a
+    # crash-looping (e.g. OOM) VM is excluded + flagged for the operator.
+    vm_heartbeat_stale_seconds: int = Field(180, alias="vmHeartbeatStaleSeconds", ge=30)
+    vm_reset_after_seconds: int = Field(600, alias="vmResetAfterSeconds", ge=60)
+    vm_delete_after_seconds: int = Field(1200, alias="vmDeleteAfterSeconds", ge=120)
+    wedged_restart_max: int = Field(3, alias="wedgedRestartMax", ge=1)
+
+    @model_validator(mode="after")
+    def _floor_within_ceiling(self) -> ScalingSpec:
+        if self.max_instances > 0 and self.min_instances > self.max_instances:
+            raise ValueError("scaling.minInstances must not exceed scaling.maxInstances")
+        return self
 
 
 class AppSpec(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     name: str
     image: str = ""
     handler: str = ""
@@ -189,14 +219,23 @@ class AppSpec(BaseModel):
     scaling: ScalingSpec = Field(default_factory=ScalingSpec)
     worker: WorkerSpec = Field(default_factory=WorkerSpec)
     placement: list[PlacementCandidate] = Field(default_factory=_default_placement)
+    batch: BatchSpec | None = Field(default=None)
 
     @model_validator(mode="after")
     def _defaults_from_name(self) -> AppSpec:
         if not self.queue_ref:
             self.queue_ref = self.name
         if not self.storage_prefix:
-            self.storage_prefix = f"apps/{self.name}"
+            self.storage_prefix = f"AppData/{self.name}"
         return self
+
+    @property
+    def infer_queue_ref(self) -> str:
+        return f"{self.queue_ref}-infer"
+
+    @property
+    def batch_queue_ref(self) -> str:
+        return f"{self.queue_ref}-batch"
 
 
 class AppStatus(BaseModel):
@@ -205,6 +244,7 @@ class AppStatus(BaseModel):
     candidate: str | None = None  # active placement candidate key
     workers: dict[str, int] = Field(default_factory=dict)
     queue: QueueDepth = Field(default_factory=QueueDepth)
+    updated_at: float = 0.0  # wall clock (time.time()) the controller last wrote this; 0 ⇒ never/unknown (stale)
 
 
 class VmState(StrEnum):
@@ -228,8 +268,9 @@ class VmRecord(BaseModel):
     app: str
     provider: str  # gce | ec2
     region: str
+    zone: str = ""  # GCE zone (region+suffix); empty for EC2. Needed to address the instance for delete/reset.
     pricing: str  # spot | on-demand
     machine_type: str
     state: VmState = VmState.provisioning
     created_at: float = 0.0  # wall clock (time.time())
-    last_heartbeat: float | None = None
+    last_heartbeat: float | None = None  # gateway-stamped heartbeat receive-time (hung-VM detection, ADR-012)

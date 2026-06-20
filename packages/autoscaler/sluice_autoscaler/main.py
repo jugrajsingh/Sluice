@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 from datetime import UTC
@@ -20,10 +21,13 @@ from kubernetes_asyncio.client import ApiClient, CoordinationV1Api
 from kubernetes_asyncio.client.rest import ApiException
 from sluice_core.config import Settings
 from sluice_core.interfaces import AppRegistry
+from sluice_core.vm_tracker import VmTracker
 from sluice_drivers.factory import build_queue
 
 from .controller import Controller
 from .k8s import KubeClusterInspector, KubePodManager
+
+logger = logging.getLogger("sluice_autoscaler")
 
 CYCLE_SECONDS = int(os.getenv("AUTOSCALER__CYCLE_SECONDS", "15"))
 CYCLE_DEADLINE_SECONDS = int(os.getenv("AUTOSCALER__CYCLE_DEADLINE_SECONDS", "60"))
@@ -77,18 +81,19 @@ async def _try_acquire_lease(coord: CoordinationV1Api) -> bool:
 
 
 def _gce_token() -> str:
-    import json as _json
-    import urllib.request
-
     tok = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
     if tok:
         return tok
-    req = urllib.request.Request(
-        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-        headers={"Metadata-Flavor": "Google"},
-    )
-    with urllib.request.urlopen(req, timeout=5) as r:  # noqa: S310 - fixed metadata URL
-        return _json.loads(r.read())["access_token"]
+    # ADC: the mounted SA JSON (GOOGLE_APPLICATION_CREDENTIALS) on a non-GCP cluster like OVH, or the
+    # GCP metadata server when running on GCP. google.auth.default() auto-detects both. Using ONLY the
+    # metadata server left the prober blind on OVH (no metadata server) — so the autoscaler couldn't
+    # see its own VMs and kept provisioning. Same SA terraform uses; it has compute read access.
+    import google.auth
+    import google.auth.transport.requests
+
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
 
 
 def _build_prober(settings: Settings):
@@ -106,24 +111,36 @@ def _build_prober(settings: Settings):
 
 async def _reconcile_cycle(controller: Controller, registry: AppRegistry) -> None:
     apps = await registry.list_apps()
+    logger.info("reconcile cycle: %d app(s): %s", len(apps), [a.name for a in apps])
     for app in apps:
         await controller.reconcile_one(app)
 
 
 async def run() -> None:
+    logging.basicConfig(
+        level=os.getenv("AUTOSCALER__LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logger.info("autoscaler starting (identity=%s, cycle=%ss)", IDENTITY, CYCLE_SECONDS)
     settings = Settings()
     in_cluster = os.getenv("AUTOSCALER__IN_CLUSTER", "1") == "1"
     workers_ns = os.getenv("AUTOSCALER__WORKERS_NAMESPACE", "default")
     kube_kw = {"in_cluster": in_cluster, "config_path": os.getenv("KUBECONFIG"), "namespace": workers_ns}
     broker_url = os.getenv("AUTOSCALER__BROKER_URL", "http://sluice-gateway")
     signing_key = os.getenv("AUTOSCALER__SIGNING_KEY", "")
+    worker_base_image = settings.placement.worker_base_image  # adapter (k8s) + VM-agent runtime image
 
-    from sluice_drivers.factory import build_cache, build_object_store, build_registry
+    from sluice_drivers.factory import build_cache, build_registry, build_state_store
 
-    store = build_object_store(settings)
-    registry = build_registry(settings, store=store)
-    cache = build_cache(settings, store=store)
-    pods = KubePodManager(broker_url=broker_url, signing_key=signing_key, **kube_kw)
+    # The autoscaler touches only control-plane state (specs, heartbeats, stockout cache, VM
+    # commands) — never inference DATA — so everything reads/writes the state store (ADR-011).
+    # state_store unset ⇒ inherit the data store (single-bucket backward compat).
+    state = build_state_store(settings)
+    registry = build_registry(settings, store=state)
+    cache = build_cache(settings, store=state)
+    pods = KubePodManager(
+        broker_url=broker_url, signing_key=signing_key, worker_base_image=worker_base_image, **kube_kw
+    )
     inspector = KubeClusterInspector(**kube_kw)
     for c in (pods, inspector):
         await c.open()
@@ -139,25 +156,31 @@ async def run() -> None:
             "config_path": entry["kubeconfig_path"],
             "namespace": entry.get("namespace", workers_ns),
         }
-        cpods = KubePodManager(broker_url=broker_url, signing_key=signing_key, **ckw)
+        cpods = KubePodManager(
+            broker_url=broker_url, signing_key=signing_key, worker_base_image=worker_base_image, **ckw
+        )
         cinsp = KubeClusterInspector(**ckw)
         extra_clusters[entry["name"]] = (cpods, cinsp)
         extra_handles += [cpods, cinsp]
     for c in extra_handles:
         await c.open()
 
+    # Stateless VM lifecycle (ADR-012): the provider CREATEs via ephemeral local-state terraform and
+    # reaps via the cloud API — so it needs only a prober, no terraform-state bucket. Build it whenever
+    # a prober (gce/ec2) is configured.
     compute = None
-    if settings.placement.tf_state_backend:
+    prober = _build_prober(settings)
+    if prober is not None:
         from .terraform import TerraformProvider
 
         compute = TerraformProvider(
             module_dir=settings.placement.tf_module_dir,
             work_root=settings.placement.tf_work_root,
-            state_backend=settings.placement.tf_state_backend,
             provider_defaults=settings.placement.provider_defaults,
             broker_url=broker_url,
             signing_key=signing_key,
-            prober=_build_prober(settings),
+            worker_base_image=worker_base_image,
+            prober=prober,
         )
 
     from .vm_commands import VmCommander
@@ -169,11 +192,11 @@ async def run() -> None:
         pods=pods,
         clusters=extra_clusters,
         compute=compute,
-        commander=VmCommander(store=store),
+        commander=VmCommander(store=state),
         cache=cache,
-        store=store,
+        store=state,
+        tracker=VmTracker(state),  # durable VM-tracking ledger on the state store (ADR-012)
         stockout_ttl_s=settings.placement.stockout_ttl_s,
-        boot_deadline_s=settings.placement.boot_deadline_s,
     )
 
     from .http import start_health_server

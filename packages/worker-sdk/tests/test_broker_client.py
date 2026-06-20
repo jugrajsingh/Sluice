@@ -37,3 +37,53 @@ async def test_lease_401_raises_token_expired():
     with pytest.raises(TokenExpired):
         await bc.lease(4)
     await bc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_should_return_messages_with_batch_attributes_when_batch_leasing():
+    """batch_lease maps broker JSON items to Message objects whose attributes carry
+    job_id/file/body_url and whose ack_token is the lease_id — exactly what the
+    adapter's batch lane reads."""
+
+    def handler(request):
+        assert request.url.path == "/internal/v1/batch/lease"
+        assert request.headers.get("authorization") == "Bearer T"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "lease_id": "1-0",
+                        "job_id": "J1",
+                        "file": "a.jsonl",
+                        "body_url": "https://s3/get/a",
+                    }
+                ]
+            },
+        )
+
+    bc = _client(handler)
+    msgs = await bc.batch_lease(1)
+    await bc.aclose()
+    assert len(msgs) == 1
+    m = msgs[0]
+    assert m.ack_token == "1-0"
+    assert m.attributes == {"job_id": "J1", "file": "a.jsonl", "body_url": "https://s3/get/a"}
+
+
+@pytest.mark.asyncio
+async def test_should_post_to_batch_control_paths_when_acking_extending_nacking():
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.path, request.headers.get("authorization")))
+        return httpx.Response(200, json={"ok": True})
+
+    bc = _client(handler)
+    await bc.batch_ack("1-0")
+    await bc.batch_extend(["1-0", "2-0"])
+    await bc.batch_nack("1-0")
+    await bc.aclose()
+    paths = [p for p, _ in seen]
+    assert paths == ["/internal/v1/batch/ack", "/internal/v1/batch/extend", "/internal/v1/batch/nack"]
+    assert all(auth == "Bearer T" for _, auth in seen)

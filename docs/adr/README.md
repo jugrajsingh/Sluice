@@ -22,6 +22,10 @@ Numbered in the order recorded; the **Date** field in each ADR is the decision d
 | [006](006-multi-cluster-ordered-placement.md) | Multi-cluster, ordered, node-aware placement | 2026-06-13 | Accepted |
 | [007](007-worker-archetypes-and-packing.md) | Worker archetypes (handler / sidecar) and GPU packing | 2026-06-14 | Accepted |
 | [008](008-capability-scoped-credentials.md) | Capability-scoped credential secrets (no Workload Identity) | 2026-06-15 | Accepted |
+| [009](009-bulk-batch-inference.md) | Bulk-batch inference (JSONL job API + object layout) | 2026-06-18 | Accepted |
+| [010](010-portable-batch-credentials.md) | Portable batch & VM-agent credentials (broker-only, no ambient store creds) | 2026-06-18 | Accepted |
+| [011](011-data-control-plane-store-split.md) | Data / control-plane object-store split | 2026-06-18 | Accepted |
+| [012](012-stateless-burst-vm-lifecycle.md) | Stateless burst-VM lifecycle (ephemeral state, cloud-as-truth, hung-VM escalation) | 2026-06-19 | Accepted |
 
 ## Template
 

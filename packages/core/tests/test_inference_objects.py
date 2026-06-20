@@ -18,9 +18,12 @@ async def test_request_and_result_roundtrip():
 
 async def test_paths_follow_prefix_template():
     store = FakeObjectStore()
-    objs = ObjectStoreInferenceObjects(store=store, prefix_template="apps/{app}")
+    objs = ObjectStoreInferenceObjects(store=store)  # default prefix
     await objs.put_request("m", "r1", b"x")
-    assert await store.exists("apps/m/requests/r1")
+    assert await store.exists("AppData/m/requests/r1")  # default data prefix is AppData/
+    custom = ObjectStoreInferenceObjects(store=store, prefix_template="custom/{app}")
+    await custom.put_request("m", "r2", b"y")
+    assert await store.exists("custom/m/requests/r2")  # explicit template still honored
 
 
 async def test_get_result_missing_raises():

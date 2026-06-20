@@ -16,7 +16,15 @@ class GcsObjectStore:
         self._endpoint = endpoint
         if endpoint:  # fake-gcs-server / emulator
             os.environ["STORAGE_EMULATOR_HOST"] = endpoint
-        self._storage = Storage()
+        self._storage: Storage | None = None
+
+    def _get_storage(self) -> Storage:
+        # Lazy init: gcloud.aio Storage() builds an aiohttp connector that calls
+        # asyncio.get_running_loop(). The gateway/console construct this store at module import
+        # (before uvicorn starts the loop), so we defer creation to first use, inside the loop.
+        if self._storage is None:
+            self._storage = Storage()
+        return self._storage
 
     async def ensure_bucket(self) -> None:
         # Real GCS buckets are created out-of-band; against an emulator
@@ -40,11 +48,13 @@ class GcsObjectStore:
             raise last_exc
 
     async def put(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
-        await self._storage.upload(self._bucket, key, data, content_type=content_type or "application/octet-stream")
+        await self._get_storage().upload(
+            self._bucket, key, data, content_type=content_type or "application/octet-stream"
+        )
 
     async def get(self, key: str) -> bytes:
         try:
-            return await self._storage.download(self._bucket, key)
+            return await self._get_storage().download(self._bucket, key)
         except Exception as e:  # gcloud-aio raises on 404
             if "404" in str(e):
                 raise KeyNotFound(key) from e
@@ -52,14 +62,14 @@ class GcsObjectStore:
 
     async def exists(self, key: str) -> bool:
         try:
-            await self._storage.download_metadata(self._bucket, key)
+            await self._get_storage().download_metadata(self._bucket, key)
             return True
         except Exception:
             return False
 
     async def delete(self, key: str) -> None:
         try:
-            await self._storage.delete(self._bucket, key)
+            await self._get_storage().delete(self._bucket, key)
         except Exception as e:
             if "404" not in str(e):
                 raise
@@ -80,5 +90,5 @@ class GcsObjectStore:
         return blob.generate_signed_url(version="v4", method=method.upper(), expiration=timedelta(seconds=expires_s))
 
     async def list_keys(self, prefix: str) -> list[str]:
-        resp = await self._storage.list_objects(self._bucket, params={"prefix": prefix})
+        resp = await self._get_storage().list_objects(self._bucket, params={"prefix": prefix})
         return sorted(item["name"] for item in resp.get("items", []))

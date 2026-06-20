@@ -21,6 +21,9 @@ class VmView(BaseModel):
     record: VmRecord
     phase: str | None = None  # heartbeat phase: installing|running|workers_exited|stopping
     workers_running: int = 0
+    # Hung classifications set by the controller (it holds the clock + heartbeat timestamps, ADR-012):
+    unreachable: bool = False  # RUNNING per the prober but heartbeats are stale (silent hang)
+    wedged: bool = False  # heartbeating but workers keep exiting past the restart cap (likely OOM/misconfig)
 
 
 class Observed(BaseModel):
@@ -69,6 +72,7 @@ class PlacementPlan(BaseModel):
     phase: str = "Ready"
     reason: str | None = None
     candidate: str | None = None
+    desired: int = 0  # the final computed desired-instance count (0 on the Paused early-return)
 
 
 def _vm_key(app: AppSpec, rec: VmRecord) -> str:
@@ -83,14 +87,13 @@ def plan(
     stocked: dict[str, str],
     now: float,
     cooldown_until: float,
-    boot_deadline_s: int = 600,
+    desired_floor: int = 0,
+    desired_override: int | None = None,
 ) -> PlacementPlan:
     actions: list[Action] = []
-    cand_by_key = {candidate_key(c): c for c in expand_candidates(app)}
 
-    def grace_for(p: WorkerStatus) -> int:
-        c = cand_by_key.get(p.candidate or "")
-        return c.schedule_grace_s if c else app.scaling.schedule_grace_s
+    def grace_for(p: WorkerStatus) -> int:  # noqa: ARG001 - one app-level grace; signature kept for call sites
+        return app.scaling.startup_grace_s
 
     # 1. Reap exited/failed pods — always, first.
     actions += [ReapPod(pod=p.pod) for p in observed.pods if p.state in _REAP]
@@ -111,7 +114,7 @@ def plan(
         elif (
             rec.state in (VmState.provisioning, VmState.booting)
             and v.phase is None
-            and now - rec.created_at > boot_deadline_s
+            and now - rec.created_at > app.scaling.startup_grace_s
         ):
             actions.append(DestroyVm(vm_id=rec.id))
             actions.append(MarkStockout(candidate_key=_vm_key(app, rec), reason="boot-deadline"))
@@ -143,11 +146,11 @@ def plan(
                 newly_marked[p.candidate] = reason
 
     if app.desired_state == "Paused":
-        return PlacementPlan(actions=actions, phase="Paused")
+        return PlacementPlan(actions=actions, phase="Paused")  # desired left 0 — we don't scale a paused app
 
-    # 4. Capacity accounting in **units** (1 pod = 1 VM = 1 unit; a unit packs `instances` replicas
-    #    internally, so messagesPerWorker is tuned per packed unit). Pods being removed this cycle
-    #    don't count; a stuck pod counts only inside its candidate's grace.
+    # 4. Capacity accounting in **units** (1 instance = 1 pod = 1 VM = 1 unit; a unit packs
+    #    `worker.instances` replicas internally, so messagesPerInstance is tuned per packed unit).
+    #    Pods being removed this cycle don't count; a stuck pod counts only inside the startup grace.
     live_pods = sum(
         1
         for p in observed.pods
@@ -158,16 +161,25 @@ def plan(
     for v in observed.vms:
         if v.record.state not in _VM_LIVE or v.record.id in destroying:
             continue  # not live, or being torn down this cycle
+        if v.unreachable or v.wedged:
+            continue  # hung — counts as neither serving nor restartable, so `need` drives a replacement
         if v.phase == "workers_exited":
             idle_vms.append(v)  # warm but idle — restartable, doesn't count as serving
         else:  # running or provisioning/booting -> one serving unit
             serving_vm_units += 1
 
-    mpw = max(app.scaling.messages_per_worker, 1)
-    desired = math.ceil(observed.depth.visible / mpw)
-    if app.scaling.max_workers > 0:
-        desired = min(desired, app.scaling.max_workers)
-    need = desired - (live_pods + serving_vm_units)
+    if desired_override is not None:
+        # SLA-derived desired (batch-aware path): already encodes the hard cap; skip plain formula.
+        desired = desired_override
+    else:
+        mpw = max(app.scaling.messages_per_instance, 1)
+        desired = math.ceil(observed.depth.visible / mpw)
+    # Warm floor + scale-down-stabilization peak (held by the controller); then the hard ceiling.
+    desired = max(desired, app.scaling.min_instances, desired_floor)
+    if app.scaling.max_instances > 0:
+        desired = min(desired, app.scaling.max_instances)
+    live_units = live_pods + serving_vm_units
+    need = desired - live_units
 
     # 5. Warm restarts beat provisioning (one unit per VM).
     for v in idle_vms:
@@ -177,10 +189,10 @@ def plan(
         need -= 1
 
     if need <= 0:
-        return PlacementPlan(actions=actions, phase="Ready")
+        return PlacementPlan(actions=actions, phase="Ready", desired=desired)
 
     if now < cooldown_until:
-        return PlacementPlan(actions=actions, phase="Scaling", reason="cooldown")
+        return PlacementPlan(actions=actions, phase="Scaling", reason="cooldown", desired=desired)
 
     # 6. Walk candidates from the top, skipping stockouts (persisted + this cycle's) and any
     #    candidate with a surfaced config error (this cycle only — config bugs aren't stockouts).
@@ -191,19 +203,19 @@ def plan(
         if key in blocked:
             continue
         if cand.type == "kubernetes":
-            actions.append(CreatePods(candidate=cand, count=min(app.scaling.scale_up_count, need)))
-            return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
-        # per-candidate cap: count only the live VMs that belong to THIS candidate's key (not global)
-        live_for_key = sum(
-            1
-            for v in observed.vms
-            if v.record.state in _VM_LIVE and v.record.id not in destroying and _vm_key(app, v.record) == key
-        )
-        n = min(need, max(cand.max_vms - live_for_key, 0))  # one VM = one unit
+            actions.append(CreatePods(candidate=cand, count=min(app.scaling.max_scale_up_per_cycle, need)))
+            return PlacementPlan(
+                actions=actions, phase="Scaling", candidate=key, reason=config_summary, desired=desired
+            )
+        # Per-cycle cap applies to VMs too (fixes the old VM burst-storm: it had NO per-cycle cap). `need`
+        # already respects the total cap because `desired` was clamped to maxInstances above, but keep an
+        # explicit maxInstances-headroom guard for safety (one VM = one unit).
+        headroom = (app.scaling.max_instances - live_units) if app.scaling.max_instances > 0 else need
+        n = min(need, app.scaling.max_scale_up_per_cycle, headroom)
         if n <= 0:
-            continue  # at VM cap for this app; try next candidate
+            continue  # at the instance ceiling for this app; try next candidate
         actions.append(ProvisionVms(candidate=cand, count=n))
-        return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary)
+        return PlacementPlan(actions=actions, phase="Scaling", candidate=key, reason=config_summary, desired=desired)
 
     reasons = ", ".join(sorted(set(blocked.values()))) or "no candidates"
-    return PlacementPlan(actions=actions, phase="Held", reason=reasons)
+    return PlacementPlan(actions=actions, phase="Held", reason=reasons, desired=desired)

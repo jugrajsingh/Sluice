@@ -1,0 +1,35 @@
+{{/* Gateway Ingress — external HTTPS entrypoint for the admission API and, crucially, the
+     /internal/v1 broker endpoints that remote workers (external clusters, burst VMs) lease against.
+     Disabled by default (in-cluster-only control planes use the Service DNS). When enabled, set
+     gateway.ingress.host and point broker.url at https://<host> so remote workers resolve it. */}}
+{{- if .Values.gateway.ingress.enabled }}
+{{- if not .Values.gateway.ingress.host }}{{ fail "gateway.ingress.enabled=true requires gateway.ingress.host" }}{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sluice-gateway
+  labels: { app.kubernetes.io/name: sluice-gateway }
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.gateway.ingress.tls.enabled }}
+  tls:
+    - hosts: [ {{ .Values.gateway.ingress.host | quote }} ]
+      secretName: {{ .Values.gateway.ingress.tls.secretName | default "sluice-gateway-tls" | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.gateway.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sluice-gateway
+                port: { number: 80 }
+{{- end }}

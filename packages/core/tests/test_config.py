@@ -25,5 +25,5 @@ def test_yaml_loaded(tmp_path, monkeypatch):
 
 def test_placement_defaults():
     s = Settings()
-    assert s.placement.stockout_ttl_s == 600 and s.placement.boot_deadline_s == 600
+    assert s.placement.stockout_ttl_s == 600
     assert s.registry.backend == "objectstore" and s.cache.backend == "objectstore"

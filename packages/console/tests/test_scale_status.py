@@ -3,7 +3,7 @@ from sluice_core.models import AppSpec, ScalingSpec, WorkerState, WorkerStatus
 
 
 def _app(paused=False, grace=180):
-    a = AppSpec(name="m", image="i", handler="h:H", scaling=ScalingSpec(schedule_grace_s=grace))
+    a = AppSpec(name="m", image="i", handler="h:H", scaling=ScalingSpec(startup_grace_s=grace))
     a.desired_state = "Paused" if paused else "Ready"
     return a
 

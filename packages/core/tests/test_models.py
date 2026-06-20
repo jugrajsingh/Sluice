@@ -12,4 +12,4 @@ def test_message_defaults_and_fields():
 
 def test_queue_depth_defaults_zero():
     d = QueueDepth()
-    assert (d.visible, d.in_flight, d.delayed) == (0, 0, 0)
+    assert (d.visible, d.in_flight) == (0, 0)

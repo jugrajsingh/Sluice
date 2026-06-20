@@ -11,7 +11,7 @@ def create_app():
     """
     from sluice_autoscaler.k8s import KubeClusterInspector  # noqa: PLC0415
     from sluice_core.config import Settings
-    from sluice_drivers.factory import build_queue, build_registry
+    from sluice_drivers.factory import build_queue, build_registry, build_state_store
 
     from .app import build_console_app
     from .static import mount_web
@@ -22,7 +22,14 @@ def create_app():
         config_path=os.getenv("KUBECONFIG"),
         namespace=os.getenv("CONSOLE__WORKERS_NAMESPACE", "default"),
     )
-    application = build_console_app(registry=build_registry(settings), queue=build_queue(settings), inspector=inspector)
+    application = build_console_app(
+        # The registry (app specs + status) lives in the control-plane state store; all three
+        # services must read it from the SAME store (no split-brain) — see ADR-011.
+        registry=build_registry(settings, store=build_state_store(settings)),
+        queue=build_queue(settings),
+        inspector=inspector,
+        api_key=os.getenv("CONSOLE__API_KEY") or None,
+    )
     mount_web(application, os.getenv("CONSOLE_WEB_DIR", "web"))
 
     @application.on_event("startup")

@@ -5,7 +5,17 @@ from sluice_core.models import Message, QueueDepth
 
 
 class RedisQueue:
-    """Queue over Redis Streams. ack_token = stream entry id."""
+    """Queue over Redis Streams. ack_token = stream entry id.
+
+    Lease ownership is idle-time based: a message that has not been acknowledged or
+    heartbeated within ``idle_reclaim_ms`` milliseconds becomes reclaimable by any
+    consumer that calls ``receive``.
+
+    For short-lived inference jobs the default window (30 s) is sufficient.  For
+    bulk-batch processing — where a single file can take minutes — construct the
+    queue with a long window (e.g. ``idle_reclaim_ms=900_000`` for 15 minutes) and
+    call ``extend_lease`` periodically well inside that window to retain ownership.
+    """
 
     def __init__(self, *, client, group: str = "sluice", consumer: str = "c1", idle_reclaim_ms: int = 30_000) -> None:
         self._r = client
@@ -65,7 +75,18 @@ class RedisQueue:
         return None
 
     async def extend_lease(self, source: str, msg: Message, seconds: int) -> None:
-        # idle-based model: re-claim to reset idle timer to self
+        """Reset the idle timer for ``msg``, retaining ownership for another ``idle_reclaim_ms`` window.
+
+        Call this within ``idle_reclaim_ms`` milliseconds of the last ``receive`` or
+        ``extend_lease`` call to prevent the message from being reclaimed by another
+        consumer.  ``seconds`` documents the caller's intended heartbeat budget (how
+        long the caller expects to hold the lease before the next heartbeat) but does
+        not directly control the reclaim window — that is set by ``idle_reclaim_ms``
+        on the queue constructor.  Batch processors should pass a value comfortably
+        below ``idle_reclaim_ms / 1000`` so clock skew cannot cause an accidental
+        reclaim between heartbeats.
+        """
+        # idle-based model: re-claim with min_idle_time=0 to reset idle timer
         await self._r.xclaim(source, self._group, self._consumer, min_idle_time=0, message_ids=[msg.ack_token])
 
     async def depth(self, source: str) -> QueueDepth:

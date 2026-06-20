@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import yaml
+from pydantic import ValidationError
 
 from .models import AppSpec
 
@@ -15,13 +16,26 @@ def parse_app_yaml(text: str) -> AppSpec:
     spec = dict(doc.get("spec") or {})
     data: dict = {"name": name}
     if "queue" in spec:
-        data["queueRef"] = (spec.pop("queue") or {}).get("ref", "")
+        q = spec.pop("queue") or {}
+        extra = set(q) - {"ref"}
+        if extra:
+            raise ValueError(f"queue: unknown key(s) {sorted(extra)} (only 'ref' is allowed)")
+        data["queueRef"] = q.get("ref", "")
     if "storage" in spec:
-        data["storagePrefix"] = (spec.pop("storage") or {}).get("prefix", "")
+        s = spec.pop("storage") or {}
+        extra = set(s) - {"prefix"}
+        if extra:
+            raise ValueError(f"storage: unknown key(s) {sorted(extra)} (only 'prefix' is allowed)")
+        data["storagePrefix"] = s.get("prefix", "")
     data.update(spec)
     try:
         return AppSpec.model_validate(data)
-    except Exception as e:  # pydantic ValidationError -> ValueError for callers
+    except ValidationError:
+        # Re-raise the structured form so callers (e.g. the CLI) can render friendly,
+        # per-field messages. ValidationError subclasses ValueError, so ValueError
+        # callers still catch it.
+        raise
+    except Exception as e:  # any other error -> ValueError for callers
         raise ValueError(str(e)) from e
 
 

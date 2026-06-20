@@ -2,6 +2,7 @@
 name = "sluice-drivers"
 version = "0.0.0"
 requires-python = ">=3.13"
+license = { text = "AGPL-3.0-or-later" }
 dependencies = ["sluice-core"]
 
 [project.optional-dependencies]
